@@ -447,9 +447,7 @@ pub fn edge_available() -> bool {
 fn edge_executable() -> std::path::PathBuf {
     #[cfg(target_os = "windows")]
     {
-        return std::path::PathBuf::from(
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        );
+        std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
     }
     #[cfg(target_os = "macos")]
     {
@@ -457,11 +455,11 @@ fn edge_executable() -> std::path::PathBuf {
     }
     #[cfg(target_os = "linux")]
     {
-        return std::path::PathBuf::from("microsoft-edge");
+        std::path::PathBuf::from("microsoft-edge")
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        return std::path::PathBuf::from("msedge");
+        std::path::PathBuf::from("msedge")
     }
 }
 
