@@ -122,6 +122,6 @@ pub fn init_logging(config: &LoggingConfig, buffer: LogBuffer) -> Result<(), Str
 
 pub fn log_banner() {
     tracing::info!(
-        "Microsoft 365 Copilot OpenAI Proxy — Rust port of github.com/kuchris/m365-copilot-openai-proxy"
+        "Microsoft 365 Copilot OpenAI Proxy — github.com/nizarfadlan/m365-copilot-proxy"
     );
 }

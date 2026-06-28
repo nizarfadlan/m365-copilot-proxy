@@ -24,7 +24,7 @@ refresh_retry_seconds = 60
 [edge]
 cdp_port = 9222
 launch_on_start = true
-profile_dir = ""  # default: ~/.m365-copilot-openai-proxy/edge-profile
+profile_dir = ""  # default: ~/.m365-copilot-proxy/edge-profile
 
 [logging]
 # trace | debug | info | warn | error

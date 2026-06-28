@@ -420,7 +420,7 @@ pub fn launch_debug_edge_on_port(cdp_port: u16, profile_dir: Option<PathBuf>) {
     let profile_dir = profile_dir.unwrap_or_else(|| {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".m365-copilot-openai-proxy")
+            .join(".m365-copilot-proxy")
             .join("edge-profile")
     });
     std::fs::create_dir_all(&profile_dir).ok();

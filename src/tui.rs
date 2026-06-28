@@ -146,7 +146,7 @@ fn draw_ui(
         ),
         Span::raw(" — "),
         Span::styled(
-            "github.com/kuchris/m365-copilot-openai-proxy",
+            "github.com/nizarfadlan/m365-copilot-proxy",
             Style::default().fg(Color::DarkGray),
         ),
     ]))

@@ -188,7 +188,7 @@ impl AppConfig {
         self.edge.profile_dir.clone().unwrap_or_else(|| {
             dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join(".m365-copilot-openai-proxy")
+                .join(".m365-copilot-proxy")
                 .join("edge-profile")
         })
     }

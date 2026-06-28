@@ -8,12 +8,12 @@ No Azure app registration. Sign in with your normal M365 Copilot browser session
 
 ## Install (no compile)
 
-Download the latest binary for your OS from [GitHub Releases](https://github.com/YOUR_ORG/m365-copilot-proxy/releases) (after you publish a tag like `v0.1.0`).
+Download the latest binary for your OS from [GitHub Releases](https://github.com/nizarfadlan/m365-copilot-proxy/releases).
 
 ```bash
 # macOS (Apple Silicon example)
 curl -L -o copilot-openai-proxy.tar.gz \
-  https://github.com/YOUR_ORG/m365-copilot-proxy/releases/latest/download/m365-copilot-proxy-macos-aarch64.tar.gz
+  https://github.com/nizarfadlan/m365-copilot-proxy/releases/latest/download/m365-copilot-proxy-macos-aarch64.tar.gz
 tar xzf copilot-openai-proxy.tar.gz
 chmod +x copilot-openai-proxy
 ./copilot-openai-proxy serve
@@ -37,7 +37,7 @@ Server: `http://127.0.0.1:8000`
 
 On first run the proxy opens a dedicated Edge window. Sign in once; the Substrate token is saved to `.env` (or the path in config).
 
-Edge profile default: `~/.m365-copilot-openai-proxy/edge-profile`
+Edge profile default: `~/.m365-copilot-proxy/edge-profile`
 
 ## Terminal UI
 

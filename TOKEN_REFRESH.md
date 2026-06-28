@@ -9,7 +9,7 @@ copilot-openai-proxy serve
 ```
 
 1. Launches Microsoft Edge with `--remote-debugging-port` (default `9222`)
-2. Uses profile `~/.m365-copilot-openai-proxy/edge-profile` (sign in once)
+2. Uses profile `~/.m365-copilot-proxy/edge-profile` (sign in once)
 3. Captures token on startup if missing
 4. Auto-refreshes when less than 5 minutes remain (configurable)
 

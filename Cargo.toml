@@ -2,6 +2,9 @@
 name = "m365-copilot-proxy"
 version = "0.1.0"
 edition = "2021"
+authors = ["Nizar Izzuddin Yatim Fadlan <hello@nizarfadlan.dev>"]
+repository = "https://github.com/nizarfadlan/m365-copilot-proxy"
+homepage = "https://github.com/nizarfadlan/m365-copilot-proxy"
 description = "OpenAI-compatible shim for Microsoft 365 Copilot Chat"
 license = "Apache-2.0"
 readme = "README.md"

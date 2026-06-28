@@ -14,10 +14,8 @@ use m365_copilot_proxy::runtime::{capture_token_interactive, run_serve, set_toke
 #[command(name = "copilot-openai-proxy")]
 #[command(version)]
 #[command(about = "OpenAI-compatible shim for Microsoft 365 Copilot Chat (Rust port)")]
-#[command(
-    long_about = "Rust port of https://github.com/kuchris/m365-copilot-openai-proxy\n\
-                  Configure via config.toml and/or environment variables (see README)."
-)]
+#[command(long_about = "https://github.com/nizarfadlan/m365-copilot-proxy\n\
+                  Configure via config.toml and/or environment variables (see README).")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
