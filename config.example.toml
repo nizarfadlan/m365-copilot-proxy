@@ -1,0 +1,39 @@
+# M365 Copilot OpenAI Proxy configuration
+# Copy to config.toml in the working directory, or to:
+#   macOS/Linux: ~/.config/m365-copilot-proxy/config.toml
+#   Windows:     %USERPROFILE%\.config\m365-copilot-proxy\config.toml
+#
+# Environment variables override these values (see README).
+
+[server]
+host = "127.0.0.1"
+port = 8000
+
+[token]
+# Browser token; usually auto-captured into env_file. Can set here for testing.
+# access_token = ""
+env_file = ".env"
+time_zone = "Asia/Tokyo"
+model_alias = "m365-copilot"
+auto_refresh = true
+capture_on_start = true
+capture_timeout_seconds = 180
+refresh_before_seconds = 300
+refresh_retry_seconds = 60
+
+[edge]
+cdp_port = 9222
+launch_on_start = true
+profile_dir = ""  # default: ~/.m365-copilot-openai-proxy/edge-profile
+
+[logging]
+# trace | debug | info | warn | error
+level = "info"
+# pretty | compact | json
+format = "pretty"
+
+[ui]
+# Terminal dashboard when stdout is a TTY
+tui = true
+# Menu bar / system tray icon (macOS, Windows, Linux)
+tray = true

@@ -1,0 +1,50 @@
+[package]
+name = "m365-copilot-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "OpenAI-compatible shim for Microsoft 365 Copilot Chat"
+license = "Apache-2.0"
+readme = "README.md"
+
+[[bin]]
+name = "copilot-openai-proxy"
+path = "src/main.rs"
+
+[lib]
+name = "m365_copilot_proxy"
+path = "src/lib.rs"
+
+[dependencies]
+async-stream = "0.3"
+atty = "0.2"
+axum = { version = "0.8", features = ["json"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+crossterm = "0.28"
+dirs = "6"
+dotenvy = "0.15"
+futures-util = "0.3"
+open = "5"
+ratatui = "0.29"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+toml = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono", "json"] }
+tray-icon = "0.19"
+urlencoding = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+axum-test = "17"
+http-body-util = "0.1"
+tempfile = "3"
+tokio-test = "0.4"
+tower = { version = "0.5", features = ["util"] }
