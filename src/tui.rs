@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
 use crate::logging::LogBuffer;
+use crate::runtime_status::RuntimeStatus;
 use crate::token_store::{AccessTokenStore, TokenStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +30,7 @@ pub struct TuiContext {
     pub token_store: Arc<AccessTokenStore>,
     pub log_buffer: LogBuffer,
     pub listen_addr: String,
+    pub runtime_status: Arc<RuntimeStatus>,
 }
 
 pub async fn run_tui(ctx: TuiContext, action_tx: mpsc::Sender<UiAction>) -> io::Result<()> {
@@ -129,7 +131,7 @@ fn draw_ui(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Min(6),
             Constraint::Length(3),
         ])
@@ -152,10 +154,7 @@ fn draw_ui(
     frame.render_widget(title, chunks[0]);
 
     let token_label = if status.valid {
-        format!(
-            "valid · {}s remaining",
-            status.seconds_remaining
-        )
+        format!("valid · {}s remaining", status.seconds_remaining)
     } else {
         status
             .error
@@ -168,7 +167,18 @@ fn draw_ui(
         Color::Red
     };
 
+    let phase = ctx.runtime_status.phase();
+    let phase_color = match phase {
+        crate::runtime_status::ServicePhase::Ready => Color::Green,
+        crate::runtime_status::ServicePhase::CaptureFailed => Color::Red,
+        _ => Color::Yellow,
+    };
+
     let status_text = vec![
+        Line::from(vec![
+            Span::styled("Phase  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(phase.label(), Style::default().fg(phase_color)),
+        ]),
         Line::from(vec![
             Span::styled("Listen  ", Style::default().fg(Color::DarkGray)),
             Span::raw(format!("http://{}", ctx.listen_addr)),
@@ -195,8 +205,8 @@ fn draw_ui(
             Span::raw(on_off(ctx.config.ui.tray)),
         ]),
     ];
-    let status_block = Paragraph::new(status_text)
-        .block(Block::default().borders(Borders::ALL).title("Status"));
+    let status_block =
+        Paragraph::new(status_text).block(Block::default().borders(Borders::ALL).title("Status"));
     frame.render_widget(status_block, chunks[1]);
 
     let visible_height = chunks[2].height.saturating_sub(2) as usize;
@@ -215,11 +225,9 @@ fn draw_ui(
             ]))
         })
         .collect();
-    let visible_list = List::new(visible).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Logs ({}/{})", start.saturating_add(1).max(1), logs.len())),
-    );
+    let visible_list = List::new(visible).block(Block::default().borders(Borders::ALL).title(
+        format!("Logs ({}/{})", start.saturating_add(1).max(1), logs.len()),
+    ));
     frame.render_widget(visible_list, chunks[2]);
 
     let help = Paragraph::new(Line::from(vec![
@@ -237,7 +245,11 @@ fn draw_ui(
 }
 
 fn on_off(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
+    if value {
+        "on"
+    } else {
+        "off"
+    }
 }
 
 async fn wait_for_ctrl_c(action_tx: mpsc::Sender<UiAction>) {

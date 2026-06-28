@@ -26,7 +26,10 @@ pub fn spawn_tray(
     }))
 }
 
-fn run_tray_thread(health_url: &str, action_tx: tokio_mpsc::Sender<UiAction>) -> Result<(), String> {
+fn run_tray_thread(
+    health_url: &str,
+    action_tx: tokio_mpsc::Sender<UiAction>,
+) -> Result<(), String> {
     use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
     use tray_icon::{TrayIconBuilder, TrayIconEvent};
 

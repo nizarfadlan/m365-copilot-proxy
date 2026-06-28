@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -56,15 +57,16 @@ const CDP_NUDGE_JS: &str = r#"
 "#;
 
 pub fn find_m365_page(tabs: &[Value]) -> Option<Value> {
-    tabs.iter().find(|tab| {
-        tab.get("type").and_then(|v| v.as_str()) == Some("page")
-            && tab
-                .get("url")
-                .and_then(|v| v.as_str())
-                .map(|url| url.starts_with("https://m365.cloud.microsoft/"))
-                .unwrap_or(false)
-    })
-    .cloned()
+    tabs.iter()
+        .find(|tab| {
+            tab.get("type").and_then(|v| v.as_str()) == Some("page")
+                && tab
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .map(|url| url.starts_with("https://m365.cloud.microsoft/"))
+                    .unwrap_or(false)
+        })
+        .cloned()
 }
 
 pub fn needs_substrate_token(token: Option<&str>) -> bool {
@@ -89,7 +91,10 @@ pub fn read_token() -> Option<String> {
 }
 
 pub async fn cdp_extract_token(port: u16, allow_nudge: bool) -> Option<String> {
-    let client = Client::builder().timeout(Duration::from_secs(1)).build().ok()?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .ok()?;
     let tabs: Vec<Value> = client
         .get(format!("http://localhost:{port}/json"))
         .send()
@@ -142,7 +147,10 @@ pub async fn cdp_extract_token(port: u16, allow_nudge: bool) -> Option<String> {
 pub async fn cdp_capture_websocket_token(port: u16, timeout_seconds: u64) -> Option<String> {
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     while Instant::now() < deadline {
-        let client = Client::builder().timeout(Duration::from_secs(3)).build().ok()?;
+        let client = Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .ok()?;
         let tabs: Vec<Value> = match client
             .get(format!("http://localhost:{port}/json"))
             .send()
@@ -196,10 +204,7 @@ pub async fn cdp_capture_websocket_token(port: u16, timeout_seconds: u64) -> Opt
     None
 }
 
-async fn wait_for_substrate_websocket_token<S>(
-    ws: &mut S,
-    deadline: Instant,
-) -> Option<String>
+async fn wait_for_substrate_websocket_token<S>(ws: &mut S, deadline: Instant) -> Option<String>
 where
     S: futures_util::StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
         + futures_util::SinkExt<Message>
@@ -331,9 +336,16 @@ pub async fn try_auto_refresh(config: &AppConfig, allow_nudge: bool) -> bool {
 
 pub async fn wait_for_m365_page(port: u16, timeout_seconds: u64) -> bool {
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
-    let client = Client::builder().timeout(Duration::from_secs(1)).build().unwrap();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
     while Instant::now() < deadline {
-        if let Ok(resp) = client.get(format!("http://localhost:{port}/json")).send().await {
+        if let Ok(resp) = client
+            .get(format!("http://localhost:{port}/json"))
+            .send()
+            .await
+        {
             if let Ok(tabs) = resp.json::<Vec<Value>>().await {
                 if find_m365_page(&tabs).is_some() {
                     return true;
@@ -345,22 +357,38 @@ pub async fn wait_for_m365_page(port: u16, timeout_seconds: u64) -> bool {
     false
 }
 
-pub async fn startup_capture_loop(config: &AppConfig) {
+pub async fn startup_capture_loop(
+    config: &AppConfig,
+    status: Arc<crate::runtime_status::RuntimeStatus>,
+) {
+    use crate::runtime_status::ServicePhase;
+
     let port = config.edge.cdp_port;
     let timeout_seconds = config.token.capture_timeout_seconds;
+    status.set_phase(ServicePhase::WaitingForEdge);
     info!("waiting for debug Edge M365 tab");
-    wait_for_m365_page(port, timeout_seconds.min(30)).await;
+    if !wait_for_m365_page(port, timeout_seconds.min(30)).await {
+        warn!(
+            "M365 Copilot tab not detected — open https://m365.cloud.microsoft/chat in debug Edge"
+        );
+    }
     info!("trying to refresh Substrate token from Edge");
     if try_auto_refresh(config, true).await {
+        status.set_phase(ServicePhase::Ready);
         return;
     }
-    warn!("waiting for Substrate token — click Copilot message box and type one character if needed");
+    status.set_phase(ServicePhase::CapturingToken);
+    warn!(
+        "waiting for Substrate token — click Copilot message box and type one character if needed"
+    );
     if let Some(token) = cdp_capture_websocket_token(port, timeout_seconds).await {
         if write_token_to(&config.token.env_file, &token).is_ok() {
             info!("startup token capture succeeded");
+            status.set_phase(ServicePhase::Ready);
             return;
         }
     }
+    status.set_phase(ServicePhase::CaptureFailed);
     warn!("startup token capture timed out; use set-token or capture-token");
 }
 
@@ -408,6 +436,14 @@ pub fn launch_debug_edge_on_port(cdp_port: u16, profile_dir: Option<PathBuf>) {
     info!(cdp_port, profile = %profile_dir.display(), "launched Edge");
 }
 
+pub fn edge_executable_path() -> std::path::PathBuf {
+    edge_executable()
+}
+
+pub fn edge_available() -> bool {
+    edge_executable_path().exists()
+}
+
 fn edge_executable() -> std::path::PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -417,9 +453,7 @@ fn edge_executable() -> std::path::PathBuf {
     }
     #[cfg(target_os = "macos")]
     {
-        std::path::PathBuf::from(
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        )
+        std::path::PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
     }
     #[cfg(target_os = "linux")]
     {

@@ -266,3 +266,209 @@ async fn responses_requires_final_user_message() {
         "The final Responses input message must be a user message."
     );
 }
+
+#[tokio::test]
+async fn chat_completion_with_fake_client() {
+    use std::sync::Arc;
+
+    use m365_copilot_proxy::copilot::FakeCopilotClient;
+    use m365_copilot_proxy::routes::app_state_with_client;
+
+    let token = make_jwt(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600,
+        "https://substrate.office.com/sydney",
+    );
+    let settings = Settings {
+        access_token: token,
+        ..Settings::default()
+    };
+    let fake = Arc::new(FakeCopilotClient::simple("copilot reply"));
+    let app = create_router(app_state_with_client(settings, fake.clone()));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "m365-copilot",
+                        "messages": [
+                            {"role": "system", "content": "Be concise."},
+                            {"role": "user", "content": "Hello"},
+                        ],
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["choices"][0]["message"]["content"], "copilot reply");
+    assert_eq!(fake.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn persistent_session_header_reuses_conversation() {
+    use std::sync::Arc;
+
+    use m365_copilot_proxy::copilot::FakeCopilotClient;
+    use m365_copilot_proxy::routes::app_state_with_client;
+
+    let token = make_jwt(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600,
+        "https://substrate.office.com/sydney",
+    );
+    let settings = Settings {
+        access_token: token,
+        ..Settings::default()
+    };
+    let fake = Arc::new(FakeCopilotClient::simple("ok"));
+    let app = create_router(app_state_with_client(settings, fake.clone()));
+    let body = json!({
+        "model": "m365-copilot",
+        "messages": [{"role": "user", "content": "Hello"}],
+    })
+    .to_string();
+
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("X-M365-Session-Id", "work")
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let calls = fake.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].2, calls[1].2);
+    assert!(calls[0].2.is_some());
+}
+
+#[tokio::test]
+async fn openai_streaming_returns_sse_chunks() {
+    use std::sync::Arc;
+
+    use m365_copilot_proxy::copilot::FakeCopilotClient;
+    use m365_copilot_proxy::routes::app_state_with_client;
+
+    let token = make_jwt(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600,
+        "https://substrate.office.com/sydney",
+    );
+    let settings = Settings {
+        access_token: token,
+        ..Settings::default()
+    };
+    let fake = Arc::new(FakeCopilotClient::streaming(&["hello", " world"]));
+    let app = create_router(app_state_with_client(settings, fake));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "m365-copilot",
+                        "stream": true,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(body.contains("hello"));
+    assert!(body.contains(" world"));
+    assert!(body.contains("data: [DONE]"));
+}
+
+#[tokio::test]
+async fn streaming_upstream_error_in_sse() {
+    use std::sync::Arc;
+
+    use m365_copilot_proxy::copilot::FakeCopilotClient;
+    use m365_copilot_proxy::routes::app_state_with_client;
+
+    let token = make_jwt(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600,
+        "https://substrate.office.com/sydney",
+    );
+    let settings = Settings {
+        access_token: token,
+        ..Settings::default()
+    };
+    let fake = Arc::new(FakeCopilotClient::failing_stream());
+    let app = create_router(app_state_with_client(settings, fake));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "model": "m365-copilot",
+                        "stream": true,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(body.contains("upstream_error"));
+    assert!(body.contains("data: [DONE]"));
+}

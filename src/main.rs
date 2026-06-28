@@ -4,12 +4,15 @@ use std::process;
 use clap::{Parser, Subcommand};
 use tracing::error;
 
+use m365_copilot_proxy::bootstrap::bootstrap;
 use m365_copilot_proxy::cdp::launch_debug_edge_on_port;
 use m365_copilot_proxy::config::{AppConfig, ServeOverrides};
+use m365_copilot_proxy::doctor::run_doctor;
 use m365_copilot_proxy::runtime::{capture_token_interactive, run_serve, set_token_interactive};
 
 #[derive(Parser)]
 #[command(name = "copilot-openai-proxy")]
+#[command(version)]
 #[command(about = "OpenAI-compatible shim for Microsoft 365 Copilot Chat (Rust port)")]
 #[command(
     long_about = "Rust port of https://github.com/kuchris/m365-copilot-openai-proxy\n\
@@ -51,6 +54,11 @@ enum Commands {
         #[arg(long, env = "M365_LOG_LEVEL")]
         log_level: Option<String>,
     },
+    /// Verify Edge, ports, token, and CDP before serving
+    Doctor {
+        #[arg(long, help = "Path to config.toml")]
+        config: Option<PathBuf>,
+    },
     /// Paste a Substrate WebSocket URL or token
     SetToken {
         #[arg(long, help = "Path to config.toml")]
@@ -78,6 +86,21 @@ enum Commands {
 async fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
+        Commands::Doctor { config } => {
+            let overrides = ServeOverrides {
+                config_path: config,
+                ..Default::default()
+            };
+            let _ = bootstrap(&overrides);
+            let cfg = AppConfig::load(&overrides);
+            let report = run_doctor(&cfg).await;
+            report.print();
+            if report.all_ok() {
+                Ok(())
+            } else {
+                Err("doctor found issues".into())
+            }
+        }
         Commands::SetToken { config } => {
             let cfg = load_config(&ServeOverrides {
                 config_path: config,
@@ -123,7 +146,7 @@ async fn main() {
             no_tray,
             log_level,
         } => {
-            run_serve(ServeOverrides {
+            let overrides = ServeOverrides {
                 config_path: config,
                 host,
                 port,
@@ -137,8 +160,11 @@ async fn main() {
                 no_tui,
                 no_tray,
                 log_level,
-            })
-            .await
+            };
+            match bootstrap(&overrides) {
+                Err(e) => Err(e),
+                Ok(_) => run_serve(overrides).await,
+            }
         }
     };
 

@@ -26,10 +26,7 @@ impl TokenStatus {
         if let Some(ref exp) = self.expires_at {
             map.insert("expires_at".into(), exp.clone().into());
         }
-        map.insert(
-            "seconds_remaining".into(),
-            self.seconds_remaining.into(),
-        );
+        map.insert("seconds_remaining".into(), self.seconds_remaining.into());
         serde_json::Value::Object(map)
     }
 }
@@ -188,8 +185,7 @@ impl AccessTokenStore {
 
         let expires_at = claims.get("exp").and_then(|v| v.as_i64()).unwrap_or(0);
         let seconds_remaining = (expires_at - now).max(0);
-        let expires_iso = DateTime::<Utc>::from_timestamp(expires_at, 0)
-            .map(|dt| dt.to_rfc3339());
+        let expires_iso = DateTime::<Utc>::from_timestamp(expires_at, 0).map(|dt| dt.to_rfc3339());
 
         TokenStatus {
             valid: seconds_remaining > 0,

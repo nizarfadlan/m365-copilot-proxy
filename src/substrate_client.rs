@@ -15,7 +15,8 @@ use crate::token_store::{decode_jwt_payload, is_substrate_token_claims};
 const SIGNALR_SEP: char = '\x1e';
 const WS_BASE: &str = "wss://substrate.office.com/m365Copilot/Chathub";
 
-const VARIANTS: &str = "EnableMcpServerWidgets,feature.EnableMcpServerWidgets,feature.EnableLuForChatCIQ,\
+const VARIANTS: &str =
+    "EnableMcpServerWidgets,feature.EnableMcpServerWidgets,feature.EnableLuForChatCIQ,\
 feature.enableChatCIQPlugin,EnableRequestPlugins,feature.EnableSensitivityLabels,\
 EnableUnsupportedUrlDetector,feature.IsCustomEngineCopilotEnabled,feature.bizchatfluxv3,\
 feature.enablechatpages,feature.enableCodeCanvas,feature.turnOnWorkTabRecommendation,\
@@ -64,14 +65,35 @@ const OPTIONS_SETS: &[&str] = &[
 ];
 
 const ALLOWED_MESSAGE_TYPES: &[&str] = &[
-    "Chat", "Suggestion", "InternalSearchQuery", "Disengaged",
-    "InternalLoaderMessage", "Progress", "GeneratedCode", "RenderCardRequest",
-    "AdsQuery", "SemanticSerp", "GenerateContentQuery", "GenerateGraphicArt",
-    "SearchQuery", "ConfirmationCard", "AuthError", "DeveloperLogs",
-    "TriggerPlugin", "HintInvocation", "MemoryUpdate", "EndOfRequest",
-    "TriggerConfirmation", "ResumeInvokeAction", "ResumeUserInputRequest",
-    "TriggerUserInputRequest", "EscapeHatch", "TriggerPluginAuth",
-    "ResumePluginAuth", "SideBySide", "ReferencesListComplete",
+    "Chat",
+    "Suggestion",
+    "InternalSearchQuery",
+    "Disengaged",
+    "InternalLoaderMessage",
+    "Progress",
+    "GeneratedCode",
+    "RenderCardRequest",
+    "AdsQuery",
+    "SemanticSerp",
+    "GenerateContentQuery",
+    "GenerateGraphicArt",
+    "SearchQuery",
+    "ConfirmationCard",
+    "AuthError",
+    "DeveloperLogs",
+    "TriggerPlugin",
+    "HintInvocation",
+    "MemoryUpdate",
+    "EndOfRequest",
+    "TriggerConfirmation",
+    "ResumeInvokeAction",
+    "ResumeUserInputRequest",
+    "TriggerUserInputRequest",
+    "EscapeHatch",
+    "TriggerPluginAuth",
+    "ResumePluginAuth",
+    "SideBySide",
+    "ReferencesListComplete",
     "SwitchRespondingEndpoint",
 ];
 
@@ -215,7 +237,9 @@ impl SubstrateCopilotClient {
         session: Option<Arc<PersistentSession>>,
     ) -> Result<String, SubstrateCopilotError> {
         let mut chunks = Vec::new();
-        let mut stream = self.chat_stream(prompt, additional_context, session).await?;
+        let mut stream = self
+            .chat_stream(prompt, additional_context, session)
+            .await?;
         while let Some(chunk) = stream.next().await {
             chunks.push(chunk?);
         }
@@ -270,12 +294,13 @@ impl SubstrateCopilotClient {
     ) -> futures_util::stream::BoxStream<'static, Result<String, SubstrateCopilotError>> {
         let req_id = Uuid::new_v4().to_string();
         let url = self.ws_url(&conv_id, &session_id, &req_id);
-        let chat_invoke = self.chat_invoke(&text, &conv_id, &session_id, &req_id, is_start_of_session);
+        let chat_invoke =
+            self.chat_invoke(&text, &conv_id, &session_id, &req_id, is_start_of_session);
 
         let result = async {
-            let mut request = url.into_client_request().map_err(|e| {
-                SubstrateCopilotError(format!("invalid websocket request: {e}"))
-            })?;
+            let mut request = url
+                .into_client_request()
+                .map_err(|e| SubstrateCopilotError(format!("invalid websocket request: {e}")))?;
             request
                 .headers_mut()
                 .insert("Origin", "https://m365.cloud.microsoft".parse().unwrap());
@@ -292,8 +317,8 @@ impl SubstrateCopilotClient {
             let _ = ws.next().await;
 
             ws.send(Message::Text(chat_invoke.into()))
-            .await
-            .map_err(|e| SubstrateCopilotError(e.to_string()))?;
+                .await
+                .map_err(|e| SubstrateCopilotError(e.to_string()))?;
 
             let mut fallback_text = String::new();
             let mut yielded_any = false;
@@ -348,10 +373,7 @@ impl SubstrateCopilotClient {
                     }
 
                     if t == Some(2) {
-                        if let Some(item_msgs) = msg
-                            .get("item")
-                            .and_then(|i| i.get("messages"))
-                        {
+                        if let Some(item_msgs) = msg.get("item").and_then(|i| i.get("messages")) {
                             fallback_text = extract_assistant_text(item_msgs);
                         }
                     }

@@ -1,26 +1,37 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
+use crate::bootstrap::{bootstrap, print_welcome};
 use crate::cdp::{
     launch_debug_edge, needs_substrate_token, read_token_from, startup_capture_loop,
     try_auto_refresh, write_token_to,
 };
 use crate::config::{AppConfig, ServeOverrides};
+use crate::doctor::format_bind_error;
 use crate::logging::{init_logging, log_banner, LogBuffer};
 use crate::routes::{create_router, default_app_state};
+use crate::runtime_status::{RuntimeStatus, ServicePhase};
 use crate::token_store::AccessTokenStore;
 use crate::tray::spawn_tray;
 use crate::tui::{run_tui, TuiContext, UiAction};
 
 pub async fn run_serve(overrides: ServeOverrides) -> Result<(), String> {
+    let bootstrap_report = bootstrap(&overrides)?;
     let log_buffer = LogBuffer::new();
     let config = AppConfig::load(&overrides);
     init_logging(&config.logging, log_buffer.clone())?;
     log_banner();
+    print_welcome(&bootstrap_report, &config);
+
+    let runtime_status = Arc::new(RuntimeStatus::new());
+    if needs_substrate_token(read_token_from(&config.token.env_file).as_deref()) {
+        runtime_status.set_phase(ServicePhase::WaitingForEdge);
+    } else {
+        runtime_status.set_phase(ServicePhase::Ready);
+    }
 
     info!(
         listen = %config.listen_addr(),
@@ -40,7 +51,11 @@ pub async fn run_serve(overrides: ServeOverrides) -> Result<(), String> {
             settings.access_token.clone(),
             config.token.env_file.clone(),
         ));
-        let state = default_app_state(settings.clone(), config.token.env_file.clone(), token_store.clone());
+        let state = default_app_state(
+            settings.clone(),
+            config.token.env_file.clone(),
+            token_store.clone(),
+        );
         let app = create_router(state);
         let listen_addr = config.listen_addr();
 
@@ -51,9 +66,12 @@ pub async fn run_serve(overrides: ServeOverrides) -> Result<(), String> {
             && needs_substrate_token(read_token_from(&config.token.env_file).as_deref())
         {
             let cfg = config.clone();
+            let status = runtime_status.clone();
             tokio::spawn(async move {
-                startup_capture_loop(&cfg).await;
+                startup_capture_loop(&cfg, status).await;
             });
+        } else {
+            runtime_status.set_phase(ServicePhase::Ready);
         }
 
         if config.token.auto_refresh {
@@ -64,9 +82,16 @@ pub async fn run_serve(overrides: ServeOverrides) -> Result<(), String> {
             });
         }
 
-        let listener = tokio::net::TcpListener::bind(&listen_addr)
-            .await
-            .map_err(|e| format!("failed to bind {listen_addr}: {e}"))?;
+        let listener = match tokio::net::TcpListener::bind(&listen_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                return Err(format_bind_error(
+                    &config.server.host,
+                    config.server.port,
+                    &e,
+                ));
+            }
+        };
         info!(%listen_addr, "HTTP server listening");
 
         let mut server_shutdown = shutdown_rx.clone();
@@ -86,6 +111,7 @@ pub async fn run_serve(overrides: ServeOverrides) -> Result<(), String> {
             token_store: token_store.clone(),
             log_buffer: log_buffer.clone(),
             listen_addr: listen_addr.clone(),
+            runtime_status: runtime_status.clone(),
         };
         let tui_action_tx = action_tx.clone();
         let tui_handle = tokio::spawn(async move {
@@ -119,8 +145,12 @@ pub async fn run_serve(overrides: ServeOverrides) -> Result<(), String> {
 
         if restart {
             info!("refreshing token from Edge");
+            runtime_status.set_phase(ServicePhase::CapturingToken);
             if !try_auto_refresh(&config, true).await {
                 warn!("auto-refresh failed; use set-token or capture-token");
+                runtime_status.set_phase(ServicePhase::CaptureFailed);
+            } else {
+                runtime_status.set_phase(ServicePhase::Ready);
             }
             continue;
         }
@@ -158,7 +188,10 @@ async fn auto_refresh_loop(config: &AppConfig, shutdown_rx: &mut watch::Receiver
             continue;
         }
 
-        info!(seconds_remaining = remaining.max(0), "token expiring soon; refreshing from Edge");
+        info!(
+            seconds_remaining = remaining.max(0),
+            "token expiring soon; refreshing from Edge"
+        );
         if !try_auto_refresh(config, true).await {
             warn!("auto-refresh failed; will retry later");
         }
@@ -170,7 +203,7 @@ async fn auto_refresh_loop(config: &AppConfig, shutdown_rx: &mut watch::Receiver
 async fn sleep_or_shutdown(seconds: u64, shutdown_rx: &mut watch::Receiver<bool>) {
     tokio::select! {
         _ = shutdown_rx.changed() => {}
-        _ = tokio::time::sleep(Duration::from_secs(seconds)) => {}
+        _ = tokio::time::sleep(std::time::Duration::from_secs(seconds)) => {}
     }
 }
 
@@ -183,7 +216,10 @@ pub fn set_token_interactive(env_file: &Path) -> Result<(), String> {
     crate::cdp::set_token_from_input(&raw, env_file)
 }
 
-pub async fn capture_token_interactive(config: &AppConfig, timeout_seconds: u64) -> Result<(), String> {
+pub async fn capture_token_interactive(
+    config: &AppConfig,
+    timeout_seconds: u64,
+) -> Result<(), String> {
     info!("listening for Substrate WebSocket token via Edge CDP");
     println!("Listening for a Substrate WebSocket token...");
     println!("In the debug Edge M365 Copilot tab, click the message box and type one character.");

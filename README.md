@@ -115,12 +115,39 @@ Recent log lines also appear in the TUI panel.
 ## Commands
 
 ```bash
+copilot-openai-proxy doctor          # preflight: Edge, ports, token, CDP
 copilot-openai-proxy serve
 copilot-openai-proxy serve --no-auto-refresh --no-launch-edge
 copilot-openai-proxy set-token
 copilot-openai-proxy capture-token
 copilot-openai-proxy launch-edge
 ```
+
+### Connect clients (same as upstream)
+
+**Claude Code**
+
+```bash
+export ANTHROPIC_BASE_URL="http://127.0.0.1:8000"
+export ANTHROPIC_API_KEY="dummy"
+claude
+```
+
+**Continue** — add to `~/.continue/config.json`:
+
+```json
+{
+  "models": [{
+    "title": "M365 Copilot",
+    "provider": "openai",
+    "model": "m365-copilot:persist",
+    "apiBase": "http://127.0.0.1:8000/v1",
+    "apiKey": "dummy"
+  }]
+}
+```
+
+See [upstream README](https://github.com/kuchris/m365-copilot-openai-proxy) for OpenCode and more examples.
 
 ## Test
 

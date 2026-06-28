@@ -10,11 +10,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::Level;
 use uuid::Uuid;
 
 use crate::config::Settings;
+use crate::copilot::CopilotClient;
 use crate::models::{
     AnthropicMessagesRequest, OpenAIChatRequest, OpenAIResponsesRequest, TranslatedRequest,
 };
@@ -28,7 +30,8 @@ use crate::translator::{
 const PERSIST_MODEL_SUFFIX: &str = ":persist";
 const SESSION_ID_HEADER: &str = "x-m365-session-id";
 
-pub type CopilotClientFactory = Arc<dyn Fn() -> Result<SubstrateCopilotClient, SubstrateCopilotError> + Send + Sync>;
+pub type CopilotClientFactory =
+    Arc<dyn Fn() -> Result<Arc<dyn CopilotClient>, SubstrateCopilotError> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -47,6 +50,12 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/responses", post(openai_responses))
         .route("/v1/messages", post(anthropic_messages))
         .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|req: &axum::http::Request<_>| {
                     tracing::span!(
@@ -56,13 +65,17 @@ pub fn create_router(state: AppState) -> Router {
                         uri = %req.uri(),
                     )
                 })
-                .on_response(|response: &axum::http::Response<_>, latency: std::time::Duration, _span: &tracing::Span| {
-                    tracing::info!(
-                        status = %response.status().as_u16(),
-                        latency_ms = latency.as_millis(),
-                        "request completed"
-                    );
-                }),
+                .on_response(
+                    |response: &axum::http::Response<_>,
+                     latency: std::time::Duration,
+                     _span: &tracing::Span| {
+                        tracing::info!(
+                            status = %response.status().as_u16(),
+                            latency_ms = latency.as_millis(),
+                            "request completed"
+                        );
+                    },
+                ),
         )
         .with_state(state)
 }
@@ -95,12 +108,7 @@ async fn chat_completions(
     Json(request): Json<OpenAIChatRequest>,
 ) -> Result<Response, AppError> {
     let translated = translate_openai_request(&request).map_err(AppError::bad_request)?;
-    let session = persistent_session(
-        &state,
-        &headers,
-        &request.model,
-        request.user.as_deref(),
-    );
+    let session = persistent_session(&state, &headers, &request.model, request.user.as_deref());
 
     let client = (state.copilot_client_factory)()?;
 
@@ -114,11 +122,7 @@ async fn chat_completions(
     }
 
     let text = client
-        .chat(
-            &translated.prompt,
-            &translated.additional_context,
-            session,
-        )
+        .chat(&translated.prompt, &translated.additional_context, session)
         .await?;
 
     Ok(Json(chat_completion_json(&state.settings.model_alias, &text)).into_response())
@@ -145,11 +149,7 @@ async fn openai_responses(
     }
 
     let text = client
-        .chat(
-            &translated.prompt,
-            &translated.additional_context,
-            session,
-        )
+        .chat(&translated.prompt, &translated.additional_context, session)
         .await?;
 
     let created = unix_now();
@@ -188,11 +188,7 @@ async fn anthropic_messages(
     }
 
     let text = client
-        .chat(
-            &translated.prompt,
-            &translated.additional_context,
-            session,
-        )
+        .chat(&translated.prompt, &translated.additional_context, session)
         .await?;
 
     Ok(Json(json!({
@@ -244,9 +240,7 @@ fn chat_completion_json(model_alias: &str, text: &str) -> Value {
 }
 
 fn sse_response(
-    stream: impl futures_util::Stream<Item = Result<String, SubstrateCopilotError>>
-        + Send
-        + 'static,
+    stream: impl futures_util::Stream<Item = Result<String, SubstrateCopilotError>> + Send + 'static,
 ) -> Response {
     let body = Body::from_stream(stream.map(|item| {
         item.map(axum::body::Bytes::from)
@@ -261,7 +255,7 @@ fn sse_response(
 
 fn openai_stream(
     model_alias: String,
-    client: SubstrateCopilotClient,
+    client: Arc<dyn CopilotClient>,
     translated: TranslatedRequest,
     session: Option<Arc<PersistentSession>>,
 ) -> impl futures_util::Stream<Item = Result<String, SubstrateCopilotError>> + Send + 'static {
@@ -322,7 +316,7 @@ fn openai_stream(
 
 fn responses_stream(
     model_alias: String,
-    client: SubstrateCopilotClient,
+    client: Arc<dyn CopilotClient>,
     translated: TranslatedRequest,
     session: Option<Arc<PersistentSession>>,
 ) -> impl futures_util::Stream<Item = Result<String, SubstrateCopilotError>> + Send + 'static {
@@ -411,7 +405,7 @@ fn responses_stream(
 
 fn anthropic_stream(
     model_alias: String,
-    client: SubstrateCopilotClient,
+    client: Arc<dyn CopilotClient>,
     translated: TranslatedRequest,
     session: Option<Arc<PersistentSession>>,
 ) -> impl futures_util::Stream<Item = Result<String, SubstrateCopilotError>> + Send + 'static {
@@ -514,11 +508,7 @@ impl From<SubstrateCopilotError> for AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(json!({"detail": self.detail})),
-        )
-            .into_response()
+        (self.status, Json(json!({"detail": self.detail}))).into_response()
     }
 }
 
@@ -534,19 +524,26 @@ pub fn default_app_state(
         token_store,
         session_store: PersistentSessionStore::default(),
         copilot_client_factory: Arc::new(move || {
-            SubstrateCopilotClient::new(
-                &token_store_clone.get(),
-                &settings_clone.time_zone,
-            )
+            let client =
+                SubstrateCopilotClient::new(&token_store_clone.get(), &settings_clone.time_zone)?;
+            Ok(Arc::new(client) as Arc<dyn CopilotClient>)
         }),
+    }
+}
+
+/// Build app state with a custom copilot client (integration tests).
+pub fn app_state_with_client(settings: Settings, client: Arc<dyn CopilotClient>) -> AppState {
+    let token_store = Arc::new(AccessTokenStore::new(settings.access_token.clone(), ".env"));
+    AppState {
+        settings,
+        token_store,
+        session_store: PersistentSessionStore::default(),
+        copilot_client_factory: Arc::new(move || Ok(client.clone())),
     }
 }
 
 /// Convenience for tests.
 pub fn default_app_state_simple(settings: Settings) -> AppState {
-    let token_store = Arc::new(AccessTokenStore::new(
-        settings.access_token.clone(),
-        ".env",
-    ));
+    let token_store = Arc::new(AccessTokenStore::new(settings.access_token.clone(), ".env"));
     default_app_state(settings, PathBuf::from(".env"), token_store)
 }

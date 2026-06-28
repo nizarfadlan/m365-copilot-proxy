@@ -114,7 +114,7 @@ pub fn translate_responses_request(
                 if is_last {
                     if role != "user" {
                         return Err(
-                            "The final Responses input message must be a user message.".into(),
+                            "The final Responses input message must be a user message.".into()
                         );
                     }
                     prompt = text;
@@ -135,9 +135,8 @@ pub fn translate_responses_request(
             }
             let transcript_text = join_lines(&transcript_lines);
             if !transcript_text.is_empty() {
-                additional_context.push(format!(
-                    "Prior conversation transcript:\n{transcript_text}"
-                ));
+                additional_context
+                    .push(format!("Prior conversation transcript:\n{transcript_text}"));
             }
 
             Ok(TranslatedRequest {
