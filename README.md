@@ -35,9 +35,29 @@ copilot-openai-proxy serve
 
 Server: `http://127.0.0.1:8000`
 
-On first run the proxy opens a dedicated Edge window. Sign in once; the Substrate token is saved to `.env` (or the path in config).
+On first run the proxy opens a dedicated **Chromium browser** window (Edge, Chrome, or Brave — auto-detected). Sign in once; the Substrate token is saved to `.env` (or the path in config).
 
-Edge profile default: `~/.m365-copilot-proxy/edge-profile`
+Browser profile default: `~/.m365-copilot-proxy/edge-profile`
+
+### Chromium browsers (not only Edge)
+
+Auto-refresh uses **Chrome DevTools Protocol (CDP)**. Any Chromium-based browser works:
+
+- Microsoft Edge (default if installed)
+- Google Chrome
+- Brave
+- Chromium
+
+Set explicitly in `config.toml`:
+
+```toml
+[edge]
+executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+```
+
+Or via env: `M365_BROWSER_EXECUTABLE=/usr/bin/google-chrome`
+
+Firefox and Safari are **not** supported for auto-refresh (different debug protocols). Use `set-token` manually instead.
 
 ## Terminal UI
 
@@ -47,7 +67,7 @@ Edge profile default: `~/.m365-copilot-proxy/edge-profile`
 |-----|--------|
 | `q` | Quit |
 | `r` | Refresh token (restarts server) |
-| `e` | Launch debug Edge |
+| `e` | Launch debug browser |
 | `↑`/`↓` | Scroll logs |
 
 Disable: `--no-tui` or `M365_TUI=false` in config/env.
@@ -58,7 +78,7 @@ When enabled (default), a menu bar icon (macOS) / system tray icon (Windows & Li
 
 - Open health check
 - Refresh token
-- Launch Edge
+- Launch browser
 - Quit
 
 Disable: `--no-tray` or `M365_TRAY=false`.
@@ -86,14 +106,15 @@ See [`config.example.toml`](config.example.toml) for all options.
 | `M365_PORT` | Listen port |
 | `M365_TIME_ZONE` | Time zone sent to Copilot |
 | `M365_MODEL_ALIAS` | Model name in `/v1/models` |
-| `M365_CDP_PORT` | Edge remote debugging port |
+| `M365_CDP_PORT` | Browser remote debugging port |
 | `M365_AUTO_REFRESH` | `true`/`false` |
 | `M365_CAPTURE_ON_START` | `true`/`false` |
 | `M365_CAPTURE_TIMEOUT_SECONDS` | Startup capture timeout |
 | `M365_REFRESH_BEFORE_SECONDS` | Refresh token N seconds before expiry |
 | `M365_REFRESH_RETRY_SECONDS` | Retry interval on refresh failure |
-| `M365_LAUNCH_EDGE` | Launch Edge on start |
-| `M365_EDGE_PROFILE_DIR` | Edge user-data directory |
+| `M365_LAUNCH_EDGE` | Launch browser on start |
+| `M365_BROWSER_EXECUTABLE` | Path to Edge/Chrome/Brave/Chromium binary |
+| `M365_EDGE_PROFILE_DIR` | Browser user-data directory |
 | `M365_LOG_LEVEL` | `trace`, `debug`, `info`, `warn`, `error` |
 | `M365_LOG_FORMAT` | `pretty`, `compact`, `json` |
 | `M365_TUI` | Enable terminal dashboard |

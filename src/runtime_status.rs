@@ -13,7 +13,7 @@ impl ServicePhase {
     pub fn label(self) -> &'static str {
         match self {
             Self::Ready => "ready",
-            Self::WaitingForEdge => "waiting for Edge M365 tab",
+            Self::WaitingForEdge => "waiting for browser M365 tab",
             Self::CapturingToken => "capturing token — click Copilot box, type 1 char",
             Self::CaptureFailed => "token capture failed — run set-token",
         }

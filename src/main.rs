@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use tracing::error;
 
 use m365_copilot_proxy::bootstrap::bootstrap;
-use m365_copilot_proxy::cdp::launch_debug_edge_on_port;
+use m365_copilot_proxy::cdp::launch_debug_browser;
 use m365_copilot_proxy::config::{AppConfig, ServeOverrides};
 use m365_copilot_proxy::doctor::run_doctor;
 use m365_copilot_proxy::runtime::{capture_token_interactive, run_serve, set_token_interactive};
@@ -126,7 +126,7 @@ async fn main() {
             };
             overrides.cdp_port = cdp_port;
             let cfg = load_config(&overrides);
-            launch_debug_edge_on_port(cfg.edge.cdp_port, cfg.edge.profile_dir);
+            launch_debug_browser(&cfg);
             Ok(())
         }
         Commands::Serve {

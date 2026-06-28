@@ -327,7 +327,7 @@ where
 pub async fn try_auto_refresh(config: &AppConfig, allow_nudge: bool) -> bool {
     if let Some(token) = cdp_extract_token(config.edge.cdp_port, allow_nudge).await {
         if write_token_to(&config.token.env_file, &token).is_ok() {
-            info!("token refreshed automatically from Edge");
+            info!("token refreshed automatically from browser");
             return true;
         }
     }
@@ -366,13 +366,13 @@ pub async fn startup_capture_loop(
     let port = config.edge.cdp_port;
     let timeout_seconds = config.token.capture_timeout_seconds;
     status.set_phase(ServicePhase::WaitingForEdge);
-    info!("waiting for debug Edge M365 tab");
+    info!("waiting for debug browser M365 tab");
     if !wait_for_m365_page(port, timeout_seconds.min(30)).await {
         warn!(
-            "M365 Copilot tab not detected — open https://m365.cloud.microsoft/chat in debug Edge"
+            "M365 Copilot tab not detected — open https://m365.cloud.microsoft/chat in the debug browser"
         );
     }
-    info!("trying to refresh Substrate token from Edge");
+    info!("trying to refresh Substrate token from browser");
     if try_auto_refresh(config, true).await {
         status.set_phase(ServicePhase::Ready);
         return;
@@ -393,12 +393,33 @@ pub async fn startup_capture_loop(
 }
 
 pub fn launch_debug_edge(config: &AppConfig) {
-    let profile_dir = config.edge_profile_dir();
-    std::fs::create_dir_all(&profile_dir).ok();
-    let cdp_port = config.edge.cdp_port;
+    launch_debug_browser(config);
+}
 
-    let edge_path = edge_executable();
-    let mut cmd = Command::new(edge_path);
+pub fn launch_debug_browser(config: &AppConfig) {
+    let profile_dir = config.edge_profile_dir();
+    let cdp_port = config.edge.cdp_port;
+    let browser = browser_executable(config);
+    spawn_debug_browser(cdp_port, &profile_dir, &browser);
+}
+
+pub fn launch_debug_edge_on_port(cdp_port: u16, profile_dir: Option<PathBuf>) {
+    launch_debug_browser_on_port(cdp_port, profile_dir, None);
+}
+
+pub fn launch_debug_browser_on_port(
+    cdp_port: u16,
+    profile_dir: Option<PathBuf>,
+    executable: Option<PathBuf>,
+) {
+    let profile_dir = profile_dir.unwrap_or_else(default_profile_dir);
+    let browser = executable.unwrap_or_else(discover_chromium_browser);
+    spawn_debug_browser(cdp_port, &profile_dir, &browser);
+}
+
+fn spawn_debug_browser(cdp_port: u16, profile_dir: &Path, browser: &Path) {
+    std::fs::create_dir_all(profile_dir).ok();
+    let mut cmd = Command::new(browser);
     cmd.arg(format!("--remote-debugging-port={cdp_port}"))
         .arg(format!("--user-data-dir={}", profile_dir.display()))
         .arg("--no-first-run")
@@ -409,57 +430,180 @@ pub fn launch_debug_edge(config: &AppConfig) {
     match cmd.spawn() {
         Ok(_) => info!(
             cdp_port,
+            browser = %browser.display(),
             profile = %profile_dir.display(),
-            "launched Edge with remote debugging"
+            "launched Chromium browser with remote debugging"
         ),
-        Err(e) => warn!(error = %e, "failed to launch Edge"),
+        Err(e) => warn!(
+            browser = %browser.display(),
+            error = %e,
+            "failed to launch browser"
+        ),
     }
 }
 
-pub fn launch_debug_edge_on_port(cdp_port: u16, profile_dir: Option<PathBuf>) {
-    let profile_dir = profile_dir.unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".m365-copilot-proxy")
-            .join("edge-profile")
-    });
-    std::fs::create_dir_all(&profile_dir).ok();
-    let mut cmd = Command::new(edge_executable());
-    cmd.arg(format!("--remote-debugging-port={cdp_port}"))
-        .arg(format!("--user-data-dir={}", profile_dir.display()))
-        .arg("--no-first-run")
-        .arg("https://m365.cloud.microsoft/chat")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let _ = cmd.spawn();
-    info!(cdp_port, profile = %profile_dir.display(), "launched Edge");
+fn default_profile_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".m365-copilot-proxy")
+        .join("edge-profile")
 }
 
-pub fn edge_executable_path() -> std::path::PathBuf {
-    edge_executable()
+pub fn browser_executable(config: &AppConfig) -> PathBuf {
+    config
+        .edge
+        .executable
+        .clone()
+        .unwrap_or_else(discover_chromium_browser)
+}
+
+pub fn edge_executable_path() -> PathBuf {
+    discover_chromium_browser()
+}
+
+pub fn edge_executable_path_for(config: &AppConfig) -> PathBuf {
+    browser_executable(config)
 }
 
 pub fn edge_available() -> bool {
-    edge_executable_path().exists()
+    chromium_browser_available(None)
 }
 
-fn edge_executable() -> std::path::PathBuf {
+pub fn browser_available(config: &AppConfig) -> bool {
+    chromium_browser_available(config.edge.executable.as_deref())
+}
+
+fn chromium_browser_available(executable: Option<&Path>) -> bool {
+    if let Some(path) = executable {
+        return path.exists() || command_exists(path);
+    }
+    discover_chromium_browser_if_present().is_some()
+}
+
+pub fn discover_chromium_browser() -> PathBuf {
+    discover_chromium_browser_if_present().unwrap_or_else(default_chromium_path)
+}
+
+fn discover_chromium_browser_if_present() -> Option<PathBuf> {
+    for candidate in chromium_install_paths() {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    for name in chromium_path_names() {
+        if command_exists(Path::new(name)) {
+            return Some(PathBuf::from(name));
+        }
+    }
+    None
+}
+
+fn command_exists(path: &Path) -> bool {
+    if path.is_absolute() || path.components().count() > 1 {
+        return path.exists();
+    }
+    let program = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        std::process::Command::new("where")
+            .arg(program.as_ref())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("which")
+            .arg(program.as_ref())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+}
+
+fn chromium_install_paths() -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        std::path::PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
+        vec![
+            PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            PathBuf::from(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+            PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+            PathBuf::from(r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe"),
+        ]
     }
     #[cfg(target_os = "macos")]
     {
-        std::path::PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+        vec![
+            PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            PathBuf::from("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+            PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ]
     }
     #[cfg(target_os = "linux")]
     {
-        std::path::PathBuf::from("microsoft-edge")
+        vec![
+            PathBuf::from("/usr/bin/microsoft-edge"),
+            PathBuf::from("/usr/bin/microsoft-edge-stable"),
+            PathBuf::from("/usr/bin/google-chrome"),
+            PathBuf::from("/usr/bin/google-chrome-stable"),
+            PathBuf::from("/usr/bin/chromium"),
+            PathBuf::from("/usr/bin/chromium-browser"),
+            PathBuf::from("/usr/bin/brave-browser"),
+            PathBuf::from("/snap/bin/chromium"),
+        ]
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        std::path::PathBuf::from("msedge")
+        vec![]
+    }
+}
+
+fn chromium_path_names() -> &'static [&'static str] {
+    #[cfg(target_os = "windows")]
+    {
+        &["msedge", "chrome", "brave"]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        &[
+            "microsoft-edge",
+            "microsoft-edge-stable",
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "brave-browser",
+        ]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        &[]
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        &["msedge", "chrome", "chromium"]
+    }
+}
+
+fn default_chromium_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        PathBuf::from("google-chrome")
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        PathBuf::from("msedge")
     }
 }
 
@@ -482,4 +626,24 @@ pub fn set_token_from_input(raw: &str, env_file: &Path) -> Result<(), String> {
     write_token_to(env_file, token)?;
     info!(path = %env_file.display(), "access token saved");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+
+    #[test]
+    fn browser_executable_uses_config_override() {
+        let mut config = AppConfig::default();
+        config.edge.executable = Some(PathBuf::from("/custom/chrome"));
+        assert_eq!(browser_executable(&config), PathBuf::from("/custom/chrome"));
+    }
+
+    #[test]
+    fn browser_available_checks_config_path() {
+        let mut config = AppConfig::default();
+        config.edge.executable = Some(PathBuf::from("/definitely/missing-browser"));
+        assert!(!browser_available(&config));
+    }
 }

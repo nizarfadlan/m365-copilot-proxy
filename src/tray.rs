@@ -36,7 +36,7 @@ fn run_tray_thread(
     let icon = build_icon()?;
     let quit_id = MenuItem::with_id("quit", "Quit", true, None);
     let refresh_id = MenuItem::with_id("refresh", "Refresh token", true, None);
-    let edge_id = MenuItem::with_id("edge", "Launch Edge", true, None);
+    let edge_id = MenuItem::with_id("edge", "Launch browser", true, None);
     let open_id = MenuItem::with_id("open", "Open health check", true, None);
     let separator = PredefinedMenuItem::separator();
 

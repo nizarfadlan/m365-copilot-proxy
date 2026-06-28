@@ -2,7 +2,7 @@ use std::net::TcpListener;
 
 use reqwest::Client;
 
-use crate::cdp::{edge_executable_path, find_m365_page, needs_substrate_token, read_token_from};
+use crate::cdp::{browser_executable, browser_available, find_m365_page, needs_substrate_token, read_token_from};
 use crate::config::AppConfig;
 use crate::token_store::{is_substrate_token, seconds_remaining};
 
@@ -41,7 +41,7 @@ pub async fn run_doctor(config: &AppConfig) -> DoctorReport {
     let mut checks = Vec::new();
 
     checks.push(check_config_paths(config));
-    checks.push(check_edge_installed());
+    checks.push(check_browser_installed(config));
     checks.push(check_port_available(
         &config.server.host,
         config.server.port,
@@ -50,7 +50,7 @@ pub async fn run_doctor(config: &AppConfig) -> DoctorReport {
     checks.push(check_port_available(
         "127.0.0.1",
         config.edge.cdp_port,
-        "Edge CDP",
+        "Browser CDP",
     ));
     checks.push(check_token(config));
     checks.push(check_cdp_reachable(config.edge.cdp_port).await);
@@ -74,29 +74,21 @@ fn check_config_paths(config: &AppConfig) -> CheckResult {
     }
 }
 
-fn check_edge_installed() -> CheckResult {
-    let path = edge_executable_path();
-    let ok = path.exists() || which_edge_fallback();
+fn check_browser_installed(config: &AppConfig) -> CheckResult {
+    let path = browser_executable(config);
+    let ok = browser_available(config);
     CheckResult {
-        name: "Microsoft Edge".into(),
+        name: "Chromium browser".into(),
         ok,
         detail: if ok {
             format!("found at {}", path.display())
         } else {
             format!(
-                "not found at {} — install Edge or set edge.executable in config",
+                "not found at {} — install Edge/Chrome/Brave or set edge.executable in config",
                 path.display()
             )
         },
     }
-}
-
-fn which_edge_fallback() -> bool {
-    std::process::Command::new("which")
-        .arg("microsoft-edge")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 fn check_port_available(host: &str, port: u16, label: &str) -> CheckResult {
@@ -119,7 +111,7 @@ fn check_token(config: &AppConfig) -> CheckResult {
         return CheckResult {
             name: "Substrate token".into(),
             ok: false,
-            detail: "missing or expired — sign in via Edge or run set-token".into(),
+            detail: "missing or expired — sign in via browser or run set-token".into(),
         };
     }
     let token = token.unwrap();
@@ -139,7 +131,7 @@ async fn check_cdp_reachable(cdp_port: u16) -> CheckResult {
         Ok(c) => c,
         Err(e) => {
             return CheckResult {
-                name: "Edge CDP".into(),
+                name: "Browser CDP".into(),
                 ok: false,
                 detail: format!("HTTP client error: {e}"),
             };
@@ -159,7 +151,7 @@ async fn check_cdp_reachable(cdp_port: u16) -> CheckResult {
                         if find_m365_page(&tabs).is_some() {
                             "CDP reachable · M365 Copilot tab open".into()
                         } else {
-                            "CDP reachable · open https://m365.cloud.microsoft/chat in debug Edge"
+                            "CDP reachable · open https://m365.cloud.microsoft/chat in the debug browser"
                                 .into()
                         }
                     }
@@ -169,16 +161,16 @@ async fn check_cdp_reachable(cdp_port: u16) -> CheckResult {
                 format!("CDP returned HTTP {}", resp.status())
             };
             CheckResult {
-                name: "Edge CDP".into(),
+                name: "Browser CDP".into(),
                 ok,
                 detail,
             }
         }
         Err(_) => CheckResult {
-            name: "Edge CDP".into(),
+            name: "Browser CDP".into(),
             ok: false,
             detail: format!(
-                "not reachable on :{cdp_port} — run serve (launches Edge) or launch-edge"
+                "not reachable on :{cdp_port} — run serve (launches browser) or launch-edge"
             ),
         },
     }

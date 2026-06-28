@@ -1,6 +1,6 @@
 # Token Refresh
 
-The `substrate.office.com` API requires a browser JWT that expires in about one hour. This Rust port uses the same **Edge CDP** approach as the [upstream Python proxy](https://github.com/kuchris/m365-copilot-openai-proxy/blob/main/TOKEN_REFRESH.md).
+The `substrate.office.com` API requires a browser JWT that expires in about one hour. This Rust port uses **Chrome DevTools Protocol (CDP)** on a Chromium-based browser (Edge, Chrome, Brave, Chromium).
 
 ## Automatic (default)
 
@@ -8,7 +8,7 @@ The `substrate.office.com` API requires a browser JWT that expires in about one 
 copilot-openai-proxy serve
 ```
 
-1. Launches Microsoft Edge with `--remote-debugging-port` (default `9222`)
+1. Launches a Chromium browser with `--remote-debugging-port` (default `9222`) — Edge, Chrome, or Brave if auto-detected
 2. Uses profile `~/.m365-copilot-proxy/edge-profile` (sign in once)
 3. Captures token on startup if missing
 4. Auto-refreshes when less than 5 minutes remain (configurable)
@@ -22,9 +22,19 @@ copilot-openai-proxy serve --no-capture-on-start
 copilot-openai-proxy serve --no-auto-refresh
 ```
 
+### Use Chrome or Brave instead of Edge
+
+```toml
+# config.toml
+[edge]
+executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+```
+
+Or: `export M365_BROWSER_EXECUTABLE=/usr/bin/google-chrome`
+
 ### If capture stalls
 
-In the debug Edge Copilot tab:
+In the debug browser Copilot tab:
 
 1. Press `F5` to reload
 2. Click the message box

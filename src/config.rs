@@ -56,6 +56,8 @@ pub struct TokenConfig {
 pub struct EdgeConfig {
     pub cdp_port: u16,
     pub launch_on_start: bool,
+    /// Chromium-based browser binary (Edge, Chrome, Brave, Chromium). Auto-detected if unset.
+    pub executable: Option<PathBuf>,
     pub profile_dir: Option<PathBuf>,
 }
 
@@ -103,6 +105,7 @@ impl Default for EdgeConfig {
         Self {
             cdp_port: 9222,
             launch_on_start: true,
+            executable: None,
             profile_dir: None,
         }
     }
@@ -279,6 +282,9 @@ fn apply_env_overrides(config: &mut AppConfig) {
     }
     if let Ok(v) = std::env::var("M365_EDGE_PROFILE_DIR") {
         config.edge.profile_dir = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("M365_BROWSER_EXECUTABLE") {
+        config.edge.executable = Some(PathBuf::from(v));
     }
     if let Ok(v) = std::env::var("M365_LOG_LEVEL") {
         config.logging.level = v;

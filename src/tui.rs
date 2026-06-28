@@ -192,7 +192,7 @@ fn draw_ui(
             Span::styled(token_label, Style::default().fg(token_color)),
         ]),
         Line::from(vec![
-            Span::styled("Edge    ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Browser ", Style::default().fg(Color::DarkGray)),
             Span::raw(format!(
                 "CDP :{} · auto-refresh {} · capture {}",
                 ctx.config.edge.cdp_port,
@@ -236,7 +236,7 @@ fn draw_ui(
         Span::styled(" r ", Style::default().fg(Color::Yellow)),
         Span::raw("refresh token  "),
         Span::styled(" e ", Style::default().fg(Color::Yellow)),
-        Span::raw("launch Edge  "),
+        Span::raw("launch browser  "),
         Span::styled(" ↑↓ ", Style::default().fg(Color::Yellow)),
         Span::raw("scroll logs"),
     ]))

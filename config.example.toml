@@ -24,6 +24,12 @@ refresh_retry_seconds = 60
 [edge]
 cdp_port = 9222
 launch_on_start = true
+# Chromium browser for CDP token capture (Edge, Chrome, Brave, Chromium).
+# Auto-detected if unset. Examples:
+#   macOS:   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+#   Linux:   "/usr/bin/google-chrome"
+#   Windows: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+# executable = ""
 profile_dir = ""  # default: ~/.m365-copilot-proxy/edge-profile
 
 [logging]
