@@ -530,7 +530,9 @@ fn chromium_install_paths() -> Vec<PathBuf> {
             PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
             PathBuf::from(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
             PathBuf::from(r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
-            PathBuf::from(r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe"),
+            PathBuf::from(
+                r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+            ),
         ]
     }
     #[cfg(target_os = "macos")]

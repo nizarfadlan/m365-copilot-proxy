@@ -2,7 +2,9 @@ use std::net::TcpListener;
 
 use reqwest::Client;
 
-use crate::cdp::{browser_executable, browser_available, find_m365_page, needs_substrate_token, read_token_from};
+use crate::cdp::{
+    browser_available, browser_executable, find_m365_page, needs_substrate_token, read_token_from,
+};
 use crate::config::AppConfig;
 use crate::token_store::{is_substrate_token, seconds_remaining};
 
