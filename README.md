@@ -70,7 +70,14 @@ copilot-openai-proxy onboard        # re-run setup anytime
 copilot-openai-proxy serve --skip-onboarding
 ```
 
-The wizard lets you pick a detected browser (including Playwright), set listen/CDP ports, and toggle token capture options.
+The wizard lets you pick a detected browser (including Playwright), enter a custom binary path, **download Chromium** (~150 MB via Playwright CDN), set listen/CDP ports, and toggle token capture options.
+
+```bash
+# Browser step options:
+#   • Detected browsers listed with full paths
+#   • Custom path — type path to any Chromium binary
+#   • Download Chromium — built-in installer (npx or direct download)
+```
 
 Firefox and Safari are **not** supported for auto-refresh (different debug protocols). Use `set-token` manually instead.
 

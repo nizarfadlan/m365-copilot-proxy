@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -9,10 +9,11 @@ use crossterm::terminal::{
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use tracing::info;
 
 use crate::bootstrap::BootstrapReport;
+use crate::browser_install::install_chromium_browser;
 use crate::cdp::{list_detected_browsers, DetectedBrowser};
 use crate::config::{AppConfig, ServeOverrides};
 
@@ -33,16 +34,25 @@ enum EditField {
     CustomBrowserPath,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserMenuItem {
+    Detected(usize),
+    Custom,
+    Download,
+}
+
 struct OnboardState {
     config: AppConfig,
     step: Step,
     browsers: Vec<DetectedBrowser>,
-    /// 0 = auto-detect, 1..=browsers.len() = pick from list, browsers.len()+1 = custom path
+    /// Index into flattened browser menu (detected + custom + download).
     browser_choice: usize,
     custom_browser_path: String,
     editing: Option<EditField>,
     option_idx: usize,
     cancelled: bool,
+    pending_download: bool,
+    browser_status: Option<String>,
 }
 
 pub fn needs_onboarding(report: &BootstrapReport, _config: &AppConfig) -> bool {
@@ -92,21 +102,47 @@ pub fn maybe_run_onboarding(
     run_onboarding(config, config_path)
 }
 
-fn apply_browser_choice(state: &mut OnboardState) {
-    if state.browser_choice == 0 {
-        state.config.edge.executable = None;
-        return;
-    }
-    if state.browser_choice <= state.browsers.len() {
-        let browser = &state.browsers[state.browser_choice - 1];
-        state.config.edge.executable = Some(browser.path.clone());
-        return;
-    }
-    let path = state.custom_browser_path.trim();
-    if path.is_empty() {
-        state.config.edge.executable = None;
+fn browser_menu_item(browsers: &[DetectedBrowser], choice: usize) -> BrowserMenuItem {
+    if choice < browsers.len() {
+        BrowserMenuItem::Detected(choice)
+    } else if choice == browsers.len() {
+        BrowserMenuItem::Custom
     } else {
-        state.config.edge.executable = Some(PathBuf::from(path));
+        BrowserMenuItem::Download
+    }
+}
+
+fn browser_menu_len(browsers: usize) -> usize {
+    browsers + 2
+}
+
+fn apply_browser_choice(state: &mut OnboardState) {
+    match browser_menu_item(&state.browsers, state.browser_choice) {
+        BrowserMenuItem::Detected(i) => {
+            state.config.edge.executable = Some(state.browsers[i].path.clone());
+        }
+        BrowserMenuItem::Custom => {
+            let path = state.custom_browser_path.trim();
+            if path.is_empty() {
+                state.config.edge.executable = None;
+            } else {
+                state.config.edge.executable = Some(PathBuf::from(path));
+            }
+        }
+        BrowserMenuItem::Download => {
+            if let Some(browser) = state
+                .browsers
+                .iter()
+                .find(|b| b.path.to_string_lossy().contains("ms-playwright"))
+            {
+                state.config.edge.executable = Some(browser.path.clone());
+            } else if !state.custom_browser_path.trim().is_empty() {
+                state.config.edge.executable =
+                    Some(PathBuf::from(state.custom_browser_path.trim()));
+            } else {
+                state.config.edge.executable = None;
+            }
+        }
     }
 }
 
@@ -118,11 +154,12 @@ impl OnboardState {
             browsers
                 .iter()
                 .position(|b| b.path == *exec)
-                .map(|i| i + 1)
                 .unwrap_or_else(|| {
                     custom_browser_path = exec.display().to_string();
-                    browsers.len() + 1
+                    browsers.len()
                 })
+        } else if browsers.is_empty() {
+            browser_menu_len(0) - 1
         } else {
             0
         };
@@ -141,22 +178,45 @@ impl OnboardState {
             editing: None,
             option_idx: 0,
             cancelled: false,
+            pending_download: false,
+            browser_status: None,
+        }
+    }
+
+    fn refresh_browsers(&mut self) {
+        self.browsers = list_detected_browsers();
+    }
+
+    fn select_browser_path(&mut self, path: &Path) {
+        if let Some(idx) = self.browsers.iter().position(|b| b.path == path) {
+            self.browser_choice = idx;
+        } else {
+            self.custom_browser_path = path.display().to_string();
+            self.browser_choice = self.browsers.len();
         }
     }
 }
 
 fn run_onboard_tui(state: &mut OnboardState) -> Result<bool, String> {
-    enable_raw_mode().map_err(|e| e.to_string())?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).map_err(|e| e.to_string())?;
+    enter_tui().map_err(|e| e.to_string())?;
     let mut terminal = ratatui::init();
-
     let mut saved = false;
 
     loop {
         terminal
             .draw(|frame| draw_onboard(frame, state))
             .map_err(|e| e.to_string())?;
+
+        if state.pending_download {
+            leave_tui(&mut terminal).map_err(|e| e.to_string())?;
+            if run_browser_download(state).is_ok() {
+                state.step = Step::Server;
+            }
+            enter_tui().map_err(|e| e.to_string())?;
+            terminal = ratatui::init();
+            state.pending_download = false;
+            continue;
+        }
 
         if event::poll(std::time::Duration::from_millis(100)).map_err(|e| e.to_string())? {
             if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
@@ -180,10 +240,47 @@ fn run_onboard_tui(state: &mut OnboardState) -> Result<bool, String> {
         }
     }
 
-    disable_raw_mode().map_err(|e| e.to_string())?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).map_err(|e| e.to_string())?;
-    ratatui::restore();
+    leave_tui(&mut terminal).map_err(|e| e.to_string())?;
     Ok(saved)
+}
+
+fn enter_tui() -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)
+}
+
+fn leave_tui(terminal: &mut ratatui::DefaultTerminal) -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    ratatui::restore();
+    Ok(())
+}
+
+fn run_browser_download(state: &mut OnboardState) -> Result<(), String> {
+    state.browser_status = Some("Downloading Chromium...".into());
+    let mut stdout = io::stdout();
+    writeln!(stdout).ok();
+    writeln!(stdout, "Downloading Chromium for M365 token capture...").ok();
+    stdout.flush().ok();
+
+    let progress = |msg: &str| {
+        let mut out = io::stdout();
+        let _ = writeln!(out, "  {msg}");
+        let _ = out.flush();
+    };
+
+    match install_chromium_browser(&progress) {
+        Ok(path) => {
+            state.refresh_browsers();
+            state.select_browser_path(&path);
+            state.browser_status = Some(format!("Installed: {}", path.display()));
+            Ok(())
+        }
+        Err(e) => {
+            state.browser_status = Some(format!("Download failed: {e}"));
+            Err(e)
+        }
+    }
 }
 
 fn handle_key(state: &mut OnboardState, code: KeyCode, modifiers: KeyModifiers) -> bool {
@@ -193,9 +290,7 @@ fn handle_key(state: &mut OnboardState, code: KeyCode, modifiers: KeyModifiers) 
 
     match state.step {
         Step::Welcome => match code {
-            KeyCode::Enter => {
-                state.step = Step::Browser;
-            }
+            KeyCode::Enter => state.step = Step::Browser,
             KeyCode::Char('q') | KeyCode::Esc => state.cancelled = true,
             _ => {}
         },
@@ -204,16 +299,14 @@ fn handle_key(state: &mut OnboardState, code: KeyCode, modifiers: KeyModifiers) 
                 state.browser_choice = state.browser_choice.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let max = state.browsers.len() + 1;
+                let max = browser_menu_len(state.browsers.len()).saturating_sub(1);
                 state.browser_choice = (state.browser_choice + 1).min(max);
             }
-            KeyCode::Enter => {
-                if state.browser_choice == state.browsers.len() + 1 {
-                    state.editing = Some(EditField::CustomBrowserPath);
-                } else {
-                    state.step = Step::Server;
-                }
-            }
+            KeyCode::Enter => match browser_menu_item(&state.browsers, state.browser_choice) {
+                BrowserMenuItem::Custom => state.editing = Some(EditField::CustomBrowserPath),
+                BrowserMenuItem::Download => state.pending_download = true,
+                BrowserMenuItem::Detected(_) => state.step = Step::Server,
+            },
             KeyCode::Char('q') | KeyCode::Esc => state.cancelled = true,
             _ => {}
         },
@@ -245,9 +338,7 @@ fn handle_key(state: &mut OnboardState, code: KeyCode, modifiers: KeyModifiers) 
                 state.option_idx = (state.option_idx + 1).min(4);
             }
             KeyCode::Enter | KeyCode::Char(' ') => toggle_option(state),
-            KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
-                state.step = Step::Confirm;
-            }
+            KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => state.step = Step::Confirm,
             KeyCode::Char('q') | KeyCode::Esc => state.cancelled = true,
             _ => {}
         },
@@ -272,6 +363,11 @@ fn handle_edit_key(
             apply_edit_field(state, field);
             state.editing = None;
             if state.step == Step::Browser && field == EditField::CustomBrowserPath {
+                let path = state.custom_browser_path.trim();
+                if !path.is_empty() && !PathBuf::from(path).exists() {
+                    state.browser_status =
+                        Some("Path not found yet — will be saved; fix later if needed".into());
+                }
                 state.step = Step::Server;
             }
         }
@@ -345,10 +441,22 @@ fn draw_onboard(frame: &mut ratatui::Frame, state: &OnboardState) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(8), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(3),
+        ])
         .split(area);
 
-    let title = Paragraph::new(" M365 Copilot Proxy — Setup")
+    let step_label = match state.step {
+        Step::Welcome => "1/5 Welcome",
+        Step::Browser => "2/5 Browser",
+        Step::Server => "3/5 Server",
+        Step::Options => "4/5 Options",
+        Step::Confirm => "5/5 Confirm",
+    };
+
+    let title = Paragraph::new(format!(" M365 Copilot Proxy — Setup ({step_label})"))
         .style(
             Style::default()
                 .fg(Color::Cyan)
@@ -367,23 +475,26 @@ fn draw_onboard(frame: &mut ratatui::Frame, state: &OnboardState) {
 
     let help = match state.step {
         Step::Welcome => " Enter  continue   q  cancel ",
-        Step::Browser => " ↑↓  select   Enter  next   q  cancel ",
+        Step::Browser => " ↑↓  select   Enter  choose / download   q  cancel ",
         Step::Server => " ↑↓  field   Enter  edit   Tab  next   q  cancel ",
         Step::Options => " ↑↓  option   Space  toggle   Tab  review   q  cancel ",
         Step::Confirm => " Enter  save & start   q  cancel ",
     };
-    let help_line = Paragraph::new(help).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(help_line, chunks[2]);
+    frame.render_widget(
+        Paragraph::new(help).block(Block::default().borders(Borders::ALL)),
+        chunks[2],
+    );
 }
 
 fn draw_welcome(frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
     let text = vec![
-        Line::from("Welcome! Configure the proxy before first run."),
+        Line::from("Welcome! Let's configure the proxy before first run."),
         Line::from(""),
-        Line::from("You will set:"),
-        Line::from("  • Chromium browser (auto-detect, Playwright, or custom path)"),
-        Line::from("  • HTTP listen address and CDP port"),
-        Line::from("  • Token capture and UI options"),
+        Line::from("Steps:"),
+        Line::from("  1. Pick a Chromium browser (detected, custom path, or download)"),
+        Line::from("  2. Set HTTP listen address and CDP port"),
+        Line::from("  3. Token capture and UI options"),
+        Line::from("  4. Review and save"),
         Line::from(""),
         Line::from("Press Enter to continue."),
     ];
@@ -394,59 +505,77 @@ fn draw_welcome(frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
 }
 
 fn draw_browser(frame: &mut ratatui::Frame, state: &OnboardState, area: ratatui::layout::Rect) {
-    let mut items = vec![ListItem::new(if state.browser_choice == 0 {
-        "▸ Auto-detect (recommended)"
-    } else {
-        "  Auto-detect (recommended)"
-    })];
+    let mut items = Vec::new();
 
-    for (idx, browser) in state.browsers.iter().enumerate() {
-        let selected = state.browser_choice == idx + 1;
-        let prefix = if selected { "▸ " } else { "  " };
+    items.push(ListItem::new(Span::styled(
+        "Detected on this machine:",
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+
+    if state.browsers.is_empty() {
+        items.push(ListItem::new(Span::styled(
+            "  (none — enter a path below or download Chromium)",
+            Style::default().fg(Color::Yellow),
+        )));
+    } else {
+        for (idx, browser) in state.browsers.iter().enumerate() {
+            let selected = state.browser_choice == idx;
+            let prefix = if selected { "▸ " } else { "  " };
+            items.push(ListItem::new(format!("{prefix}{}", browser.label)));
+            items.push(ListItem::new(Span::styled(
+                format!("     {}", browser.path.display()),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    items.push(ListItem::new(""));
+
+    let custom_idx = state.browsers.len();
+    let custom_selected = state.browser_choice == custom_idx;
+    if state.editing == Some(EditField::CustomBrowserPath) {
         items.push(ListItem::new(format!(
-            "{prefix}{} — {}",
-            browser.label,
-            browser.path.display()
+            "▸ Custom path: {}_",
+            state.custom_browser_path
+        )));
+    } else if custom_selected {
+        items.push(ListItem::new(format!(
+            "▸ Enter custom path{}",
+            if state.custom_browser_path.is_empty() {
+                " (Enter to type)".to_string()
+            } else {
+                format!(": {}", state.custom_browser_path)
+            }
+        )));
+    } else {
+        items.push(ListItem::new("  Enter custom path to browser binary..."));
+    }
+
+    let download_idx = state.browsers.len() + 1;
+    let download_selected = state.browser_choice == download_idx;
+    let download_line = if download_selected {
+        "▸ Download Chromium (~150 MB, Playwright build)"
+    } else {
+        "  Download Chromium (~150 MB, Playwright build)"
+    };
+    items.push(ListItem::new(download_line));
+
+    if let Some(status) = &state.browser_status {
+        items.push(ListItem::new(""));
+        items.push(ListItem::new(Span::styled(
+            format!("  {status}"),
+            Style::default().fg(Color::Cyan),
         )));
     }
 
-    let custom_idx = state.browsers.len() + 1;
-    let custom_selected = state.browser_choice == custom_idx;
-    let custom_label = if state.editing == Some(EditField::CustomBrowserPath) {
-        format!(
-            "▸ Custom path: {}_",
-            state.custom_browser_path
-        )
-    } else if custom_selected {
-        format!(
-            "▸ Custom path: {}",
-            if state.custom_browser_path.is_empty() {
-                "(Enter to type)".to_string()
-            } else {
-                state.custom_browser_path.clone()
-            }
-        )
-    } else {
-        "  Custom path...".to_string()
-    };
-    items.push(ListItem::new(custom_label));
-
-    if state.browsers.is_empty() {
-        items.insert(
-            1,
-            ListItem::new(Span::styled(
-                "  (no browsers found — install Chrome/Edge or use Playwright)",
-                Style::default().fg(Color::Yellow),
-            )),
-        );
-    }
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Browser for token capture"),
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Browser for token capture"),
+        ),
+        area,
     );
-    frame.render_widget(list, area);
 }
 
 fn draw_server(frame: &mut ratatui::Frame, state: &OnboardState, area: ratatui::layout::Rect) {
@@ -459,23 +588,27 @@ fn draw_server(frame: &mut ratatui::Frame, state: &OnboardState, area: ratatui::
         .iter()
         .enumerate()
         .map(|(idx, (label, value))| {
-            let marker = if state.option_idx == idx { "▸ " } else { "  " };
+            let marker = if state.option_idx == idx {
+                "▸ "
+            } else {
+                "  "
+            };
             let editing = state.editing.is_some_and(|f| {
                 matches!(
                     (idx, f),
                     (0, EditField::Host) | (1, EditField::Port) | (2, EditField::CdpPort)
                 )
             });
-            let display = if editing { format!("{value}_") } else { value.clone() };
+            let display = if editing {
+                format!("{value}_")
+            } else {
+                value.clone()
+            };
             ListItem::new(format!("{marker}{label}: {display}"))
         })
         .collect();
     frame.render_widget(
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Proxy server"),
-        ),
+        List::new(items).block(Block::default().borders(Borders::ALL).title("Proxy server")),
         area,
     );
 }
@@ -484,24 +617,30 @@ fn draw_options(frame: &mut ratatui::Frame, state: &OnboardState, area: ratatui:
     let options = [
         ("Launch browser on start", state.config.edge.launch_on_start),
         ("Auto-refresh token", state.config.token.auto_refresh),
-        ("Capture token on start", state.config.token.capture_on_start),
+        (
+            "Capture token on start",
+            state.config.token.capture_on_start,
+        ),
         ("Terminal dashboard (TUI)", state.config.ui.tui),
         ("System tray icon", state.config.ui.tray),
     ];
-    let items: Vec<ListItem> = options
+    let mut lines: Vec<ListItem> = options
         .iter()
         .enumerate()
         .map(|(idx, (label, on))| {
-            let marker = if state.option_idx == idx { "▸ " } else { "  " };
+            let marker = if state.option_idx == idx {
+                "▸ "
+            } else {
+                "  "
+            };
             ListItem::new(format!("{marker}{label}: {}", on_off(*on)))
         })
         .collect();
 
-    let mut lines = items;
     lines.push(ListItem::new(""));
     #[cfg(target_os = "macos")]
     lines.push(ListItem::new(Span::styled(
-        "  Note: system tray on macOS requires the main thread; left off by default.",
+        "  Note: system tray on macOS is disabled by default (main-thread limitation).",
         Style::default().fg(Color::DarkGray),
     )));
 
@@ -509,7 +648,7 @@ fn draw_options(frame: &mut ratatui::Frame, state: &OnboardState, area: ratatui:
         List::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Options"),
+                .title("Token & UI options"),
         ),
         area,
     );
@@ -527,7 +666,8 @@ fn draw_confirm(frame: &mut ratatui::Frame, state: &OnboardState, area: ratatui:
         )),
         Line::from(format!("  CDP:     :{}", state.config.edge.cdp_port)),
         Line::from(format!(
-            "  Token:   auto-refresh {}, capture on start {}",
+            "  Token:   launch {}, auto-refresh {}, capture {}",
+            on_off(state.config.edge.launch_on_start),
             on_off(state.config.token.auto_refresh),
             on_off(state.config.token.capture_on_start),
         )),
@@ -540,25 +680,40 @@ fn draw_confirm(frame: &mut ratatui::Frame, state: &OnboardState, area: ratatui:
         Line::from("Press Enter to save and start the proxy."),
     ];
     frame.render_widget(
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Confirm")),
+        Paragraph::new(text)
+            .wrap(Wrap { trim: true })
+            .block(Block::default().borders(Borders::ALL).title("Confirm")),
         area,
     );
 }
 
 fn browser_summary(state: &OnboardState) -> String {
-    if state.browser_choice == 0 {
-        return "auto-detect".into();
-    }
-    if state.browser_choice <= state.browsers.len() {
-        return state.browsers[state.browser_choice - 1].label.clone();
-    }
-    if state.custom_browser_path.trim().is_empty() {
-        "auto-detect".into()
-    } else {
-        state.custom_browser_path.clone()
+    match browser_menu_item(&state.browsers, state.browser_choice) {
+        BrowserMenuItem::Detected(i) => format!(
+            "{} ({})",
+            state.browsers[i].label,
+            state.browsers[i].path.display()
+        ),
+        BrowserMenuItem::Custom => {
+            if state.custom_browser_path.trim().is_empty() {
+                "not set".into()
+            } else {
+                state.custom_browser_path.clone()
+            }
+        }
+        BrowserMenuItem::Download => state
+            .browsers
+            .iter()
+            .find(|b| b.path.to_string_lossy().contains("ms-playwright"))
+            .map(|b| format!("{} ({})", b.label, b.path.display()))
+            .unwrap_or_else(|| "Download Chromium (pending)".into()),
     }
 }
 
 fn on_off(value: bool) -> &'static str {
-    if value { "on" } else { "off" }
+    if value {
+        "on"
+    } else {
+        "off"
+    }
 }

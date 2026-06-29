@@ -1,12 +1,13 @@
 pub mod bootstrap;
+pub mod browser_install;
 pub mod cdp;
 pub mod config;
 pub mod copilot;
 pub mod doctor;
 pub mod logging;
 pub mod models;
-pub mod routes;
 pub mod onboarding;
+pub mod routes;
 pub mod runtime;
 pub mod runtime_status;
 pub mod session_store;

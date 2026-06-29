@@ -625,8 +625,7 @@ fn discover_playwright_chromium_binaries() -> Vec<(String, PathBuf)> {
         })
         .collect();
     dirs.sort_by(|a, b| {
-        playwright_revision(&b.file_name())
-            .cmp(&playwright_revision(&a.file_name()))
+        playwright_revision(&b.file_name()).cmp(&playwright_revision(&a.file_name()))
     });
 
     let mut found = Vec::new();
@@ -647,8 +646,13 @@ fn playwright_revision(name: &std::ffi::OsStr) -> u64 {
         .unwrap_or(0)
 }
 
-fn playwright_chromium_binary_in_dir(dir: &Path) -> Option<PathBuf> {
-    for relative in playwright_chromium_relative_paths() {
+pub fn playwright_chromium_binary_in_dir(dir: &Path) -> Option<PathBuf> {
+    for relative in playwright_chromium_layout()
+        .ok()?
+        .binary_relative_paths
+        .iter()
+        .map(PathBuf::from)
+    {
         let candidate = dir.join(relative);
         if candidate.exists() {
             return Some(candidate);
@@ -657,35 +661,62 @@ fn playwright_chromium_binary_in_dir(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn playwright_chromium_relative_paths() -> Vec<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        vec![
-            PathBuf::from(
+/// Playwright uses different names for CDN zip archives vs folders inside the zip.
+/// e.g. download `chromium-mac-arm64.zip` → extract `chrome-mac-arm64/...`
+#[derive(Debug, Clone, Copy)]
+pub struct PlaywrightChromiumLayout {
+    pub download_archive: &'static str,
+    pub binary_relative_paths: &'static [&'static str],
+}
+
+pub fn playwright_chromium_layout() -> Result<PlaywrightChromiumLayout, String> {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Ok(PlaywrightChromiumLayout {
+            download_archive: "chromium-mac-arm64",
+            binary_relative_paths: &[
                 "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-            ),
-            PathBuf::from(
+                "chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium",
                 "chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-            ),
-            PathBuf::from("chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium"),
-            PathBuf::from("chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
-        ]
-    }
-    #[cfg(target_os = "linux")]
-    {
-        vec![PathBuf::from("chrome-linux/chrome")]
-    }
-    #[cfg(target_os = "windows")]
-    {
-        vec![PathBuf::from("chrome-win/chrome.exe")]
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        vec![]
+                "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+            ],
+        })
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Ok(PlaywrightChromiumLayout {
+            download_archive: "chromium-mac",
+            binary_relative_paths: &[
+                "chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+                "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+                "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+            ],
+        })
+    } else if cfg!(target_os = "linux") {
+        Ok(PlaywrightChromiumLayout {
+            download_archive: "chromium-linux",
+            binary_relative_paths: &["chrome-linux/chrome"],
+        })
+    } else if cfg!(target_os = "windows") {
+        Ok(PlaywrightChromiumLayout {
+            download_archive: "chromium-win64",
+            binary_relative_paths: &["chrome-win/chrome.exe"],
+        })
+    } else {
+        Err("unsupported platform for Playwright Chromium".into())
     }
 }
 
-fn playwright_cache_dir() -> Option<PathBuf> {
+pub fn playwright_chromium_relative_paths() -> Vec<PathBuf> {
+    playwright_chromium_layout()
+        .map(|layout| {
+            layout
+                .binary_relative_paths
+                .iter()
+                .map(|p| PathBuf::from(*p))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn playwright_cache_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         dirs::cache_dir().map(|d| d.join("ms-playwright"))
@@ -891,7 +922,8 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake_browser, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&fake_browser, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
         }
 
         let mut config = AppConfig::default();

@@ -194,7 +194,8 @@ fn run_onboard_command(config: Option<PathBuf>) -> Result<(), String> {
     };
     bootstrap(&overrides)?;
     let config_path = resolve_config_path(&overrides).ok_or_else(|| {
-        "could not determine config path; pass --config or run from a writable directory".to_string()
+        "could not determine config path; pass --config or run from a writable directory"
+            .to_string()
     })?;
     let cfg = AppConfig::load(&overrides);
     run_onboarding(&cfg, &config_path)?;
