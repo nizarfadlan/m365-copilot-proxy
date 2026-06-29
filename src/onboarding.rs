@@ -146,6 +146,19 @@ fn apply_browser_choice(state: &mut OnboardState) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn default_onboard_ui(mut config: AppConfig) -> AppConfig {
+    if config.ui.tray {
+        config.ui.tray = false;
+    }
+    config
+}
+
+#[cfg(not(target_os = "macos"))]
+fn default_onboard_ui(config: AppConfig) -> AppConfig {
+    config
+}
+
 impl OnboardState {
     fn new(config: AppConfig) -> Self {
         let browsers = list_detected_browsers();
@@ -164,14 +177,7 @@ impl OnboardState {
             0
         };
 
-        let config = {
-            let mut config = config;
-            #[cfg(target_os = "macos")]
-            if config.ui.tray {
-                config.ui.tray = false;
-            }
-            config
-        };
+        let config = default_onboard_ui(config);
 
         Self {
             config,
