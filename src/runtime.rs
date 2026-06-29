@@ -54,7 +54,8 @@ pub async fn run_serve_with_config(
     );
 
     loop {
-        let token_missing = needs_substrate_token(read_token_from(&config.token.env_file).as_deref());
+        let token_missing =
+            needs_substrate_token(read_token_from(&config.token.env_file).as_deref());
         if config.edge.launch_on_start {
             if token_missing {
                 launch_debug_browser_interactive(&config);

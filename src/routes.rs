@@ -21,9 +21,7 @@ use crate::copilot::CopilotClient;
 use crate::models::{
     AnthropicMessagesRequest, OpenAIChatRequest, OpenAIResponsesRequest, TranslatedRequest,
 };
-use crate::openapi::{
-    ErrorResponse, HealthResponse, ModelListResponse, TokenStatusResponse,
-};
+use crate::openapi::{ErrorResponse, HealthResponse, ModelListResponse, TokenStatusResponse};
 use crate::session_store::{PersistentSession, PersistentSessionStore};
 use crate::substrate_client::{SubstrateCopilotClient, SubstrateCopilotError};
 use crate::token_store::AccessTokenStore;

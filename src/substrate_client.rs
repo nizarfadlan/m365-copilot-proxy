@@ -306,13 +306,8 @@ impl SubstrateCopilotClient {
     ) -> futures_util::stream::BoxStream<'static, Result<String, SubstrateCopilotError>> {
         let req_id = Uuid::new_v4().to_string();
         let url = self.ws_url(&conv_id, &session_id, &req_id);
-        let chat_payload = self.chat_payload(
-            &text,
-            &conv_id,
-            &session_id,
-            &req_id,
-            is_start_of_session,
-        );
+        let chat_payload =
+            self.chat_payload(&text, &conv_id, &session_id, &req_id, is_start_of_session);
 
         async_stream::stream! {
             let mut request = match url.into_client_request() {

@@ -151,7 +151,9 @@ pub fn init_logging(
 
     let buffer_layer = BufferLayer { buffer };
 
-    let registry = tracing_subscriber::registry().with(filter).with(buffer_layer);
+    let registry = tracing_subscriber::registry()
+        .with(filter)
+        .with(buffer_layer);
 
     if tui_active {
         registry.try_init().map_err(|e| e.to_string())
@@ -169,7 +171,10 @@ pub fn init_logging(
                 .with_timer(ChronoLocal::rfc_3339())
                 .boxed(),
         };
-        registry.with(fmt_layer).try_init().map_err(|e| e.to_string())
+        registry
+            .with(fmt_layer)
+            .try_init()
+            .map_err(|e| e.to_string())
     }
 }
 

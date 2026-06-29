@@ -473,10 +473,7 @@ fn kill_cdp_listeners_on_port(cdp_port: u16) {
 
 #[cfg(windows)]
 fn kill_cdp_listeners_on_port(cdp_port: u16) {
-    let Ok(output) = Command::new("netstat")
-        .args(["-ano", "-p", "tcp"])
-        .output()
-    else {
+    let Ok(output) = Command::new("netstat").args(["-ano", "-p", "tcp"]).output() else {
         return;
     };
     let port_suffix = format!(":{cdp_port}");
@@ -485,9 +482,7 @@ fn kill_cdp_listeners_on_port(cdp_port: u16) {
             continue;
         }
         if let Some(pid) = line.split_whitespace().last() {
-            let _ = Command::new("taskkill")
-                .args(["/F", "/PID", pid])
-                .status();
+            let _ = Command::new("taskkill").args(["/F", "/PID", pid]).status();
         }
     }
 }
@@ -504,7 +499,12 @@ pub fn launch_debug_browser_interactive(config: &AppConfig) {
     let profile_dir = config.edge_profile_dir();
     let cdp_port = config.edge.cdp_port;
     let browser = browser_executable(config);
-    spawn_debug_browser(cdp_port, &profile_dir, &browser, BrowserLaunchMode::Interactive);
+    spawn_debug_browser(
+        cdp_port,
+        &profile_dir,
+        &browser,
+        BrowserLaunchMode::Interactive,
+    );
 }
 
 pub fn ensure_background_browser(config: &AppConfig) {
@@ -540,7 +540,12 @@ pub fn ensure_background_browser(config: &AppConfig) {
 
     let profile_dir = config.edge_profile_dir();
     let browser = browser_executable(config);
-    spawn_debug_browser(cdp_port, &profile_dir, &browser, BrowserLaunchMode::Background);
+    spawn_debug_browser(
+        cdp_port,
+        &profile_dir,
+        &browser,
+        BrowserLaunchMode::Background,
+    );
 }
 
 pub fn cdp_port_reachable(cdp_port: u16) -> bool {
@@ -569,15 +574,15 @@ pub fn launch_debug_browser_on_port(
 ) {
     let profile_dir = profile_dir.unwrap_or_else(default_profile_dir);
     let browser = resolve_browser_executable(executable.as_deref());
-    spawn_debug_browser(cdp_port, &profile_dir, &browser, BrowserLaunchMode::Interactive);
+    spawn_debug_browser(
+        cdp_port,
+        &profile_dir,
+        &browser,
+        BrowserLaunchMode::Interactive,
+    );
 }
 
-fn spawn_debug_browser(
-    cdp_port: u16,
-    profile_dir: &Path,
-    browser: &Path,
-    mode: BrowserLaunchMode,
-) {
+fn spawn_debug_browser(cdp_port: u16, profile_dir: &Path, browser: &Path, mode: BrowserLaunchMode) {
     stop_tracked_browser();
     std::fs::create_dir_all(profile_dir).ok();
     let browser = resolve_browser_executable(Some(browser));
