@@ -1,3 +1,4 @@
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -7,28 +8,60 @@ use tracing::{info, warn};
 use crate::config::AppConfig;
 use crate::tui::UiAction;
 
+pub struct TrayHandle {
+    join: thread::JoinHandle<()>,
+    shutdown: mpsc::Sender<()>,
+}
+
+impl TrayHandle {
+    pub fn shutdown(self) {
+        let _ = self.shutdown.send(());
+        let _ = self.join.join();
+    }
+}
+
+/// macOS AppKit menus must be created on the main thread; tray-icon spawns a worker thread.
+pub fn tray_supported() -> bool {
+    !cfg!(target_os = "macos")
+}
+
 pub fn spawn_tray(
-    config: AppConfig,
-    listen_addr: String,
+    config: &AppConfig,
+    listen_addr: &str,
     action_tx: tokio_mpsc::Sender<UiAction>,
-) -> Option<thread::JoinHandle<()>> {
+) -> Option<TrayHandle> {
     if !config.ui.tray {
+        return None;
+    }
+
+    if !tray_supported() {
+        warn!(
+            "system tray disabled on macOS (AppKit requires the main thread); \
+             use the TUI or pass --no-tray"
+        );
         return None;
     }
 
     let thread_action_tx = action_tx.clone();
     let health_url = format!("http://{listen_addr}/healthz");
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
 
-    Some(thread::spawn(move || {
-        if let Err(e) = run_tray_thread(&health_url, thread_action_tx) {
+    let join = thread::spawn(move || {
+        if let Err(e) = run_tray_thread(&health_url, thread_action_tx, shutdown_rx) {
             warn!(error = %e, "system tray unavailable; continuing without tray icon");
         }
-    }))
+    });
+
+    Some(TrayHandle {
+        join,
+        shutdown: shutdown_tx,
+    })
 }
 
 fn run_tray_thread(
     health_url: &str,
     action_tx: tokio_mpsc::Sender<UiAction>,
+    shutdown_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
     use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
     use tray_icon::{TrayIconBuilder, TrayIconEvent};
@@ -61,6 +94,10 @@ fn run_tray_thread(
     let health_url = health_url.to_string();
 
     loop {
+        if shutdown_rx.try_recv().is_ok() {
+            break;
+        }
+
         if let Ok(event) = menu_rx.try_recv() {
             let id = event.id.0.as_str();
             if id == quit_id.id().0.as_str() {

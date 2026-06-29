@@ -127,6 +127,9 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             tui: true,
+            #[cfg(target_os = "macos")]
+            tray: false,
+            #[cfg(not(target_os = "macos"))]
             tray: true,
         }
     }

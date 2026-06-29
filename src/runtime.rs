@@ -121,7 +121,7 @@ pub async fn run_serve_with_config(
             }
         });
 
-        let _tray = spawn_tray(config.clone(), listen_addr.clone(), action_tx.clone());
+        let tray = spawn_tray(&config, &listen_addr, action_tx.clone());
 
         let tui_ctx = TuiContext {
             config: config.clone(),
@@ -159,6 +159,9 @@ pub async fn run_serve_with_config(
         let _ = shutdown_tx.send(true);
         let _ = server_handle.await;
         tui_handle.abort();
+        if let Some(tray) = tray {
+            tray.shutdown();
+        }
 
         if restart {
             info!("refreshing token from Edge");

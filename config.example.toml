@@ -42,5 +42,5 @@ format = "pretty"
 [ui]
 # Terminal dashboard when stdout is a TTY
 tui = true
-# Menu bar / system tray icon (macOS, Windows, Linux)
+# Menu bar / system tray icon (Windows & Linux). macOS: disabled (AppKit main-thread limitation).
 tray = true

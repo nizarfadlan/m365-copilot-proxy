@@ -96,12 +96,14 @@ Disable: `--no-tui` or `M365_TUI=false` in config/env.
 
 ## System Tray
 
-When enabled (default), a menu bar icon (macOS) / system tray icon (Windows & Linux) provides:
+On **Windows & Linux**, when enabled (default), a system tray icon provides:
 
 - Open health check
 - Refresh token
 - Launch browser
 - Quit
+
+**macOS:** tray is disabled by default — AppKit menus must run on the main thread, which conflicts with the async server + TUI. Use the TUI (`q` quit, `r` refresh) instead.
 
 Disable: `--no-tray` or `M365_TRAY=false`.
 
