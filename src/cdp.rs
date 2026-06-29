@@ -498,7 +498,6 @@ pub fn list_detected_browsers() -> Vec<DetectedBrowser> {
         }
     }
 
-    #[cfg(target_os = "macos")]
     for path in discover_chromium_via_mdfind_all() {
         if seen.insert(path.clone()) {
             browsers.push(DetectedBrowser {
@@ -567,42 +566,43 @@ fn discover_chromium_browser_if_present() -> Option<PathBuf> {
     list_detected_browsers().into_iter().next().map(|b| b.path)
 }
 
-#[cfg(target_os = "macos")]
 fn discover_chromium_via_mdfind_all() -> Vec<PathBuf> {
-    const BUNDLE_IDS: &[&str] = &[
-        "com.microsoft.edgemac",
-        "com.google.Chrome",
-        "com.brave.Browser",
-        "org.chromium.Chromium",
-    ];
-    let mut found = Vec::new();
-    for bundle_id in BUNDLE_IDS {
-        let Ok(output) = Command::new("mdfind")
-            .arg(format!("kMDItemCFBundleIdentifier == '{bundle_id}'"))
-            .output()
-        else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let app_path = line.trim();
-            if app_path.is_empty() {
+    #[cfg(target_os = "macos")]
+    {
+        const BUNDLE_IDS: &[&str] = &[
+            "com.microsoft.edgemac",
+            "com.google.Chrome",
+            "com.brave.Browser",
+            "org.chromium.Chromium",
+        ];
+        let mut found = Vec::new();
+        for bundle_id in BUNDLE_IDS {
+            let Ok(output) = Command::new("mdfind")
+                .arg(format!("kMDItemCFBundleIdentifier == '{bundle_id}'"))
+                .output()
+            else {
+                continue;
+            };
+            if !output.status.success() {
                 continue;
             }
-            let binary = macos_app_binary_path(app_path);
-            if binary.exists() {
-                found.push(binary);
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let app_path = line.trim();
+                if app_path.is_empty() {
+                    continue;
+                }
+                let binary = macos_app_binary_path(app_path);
+                if binary.exists() {
+                    found.push(binary);
+                }
             }
         }
+        found
     }
-    found
-}
-
-#[cfg(not(target_os = "macos"))]
-fn discover_chromium_via_mdfind_all() -> Vec<PathBuf> {
-    vec![]
+    #[cfg(not(target_os = "macos"))]
+    {
+        vec![]
+    }
 }
 
 fn discover_playwright_chromium_binaries() -> Vec<(String, PathBuf)> {
@@ -946,11 +946,12 @@ mod tests {
 
     #[test]
     fn discovers_playwright_chromium_layout() {
+        let layout = playwright_chromium_layout().expect("platform layout");
+        let relative = PathBuf::from(layout.binary_relative_paths[0]);
+
         let dir = tempfile::tempdir().unwrap();
         let chromium_dir = dir.path().join("chromium-9999");
-        let binary = chromium_dir.join(
-            "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
-        );
+        let binary = chromium_dir.join(&relative);
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(&binary, b"").unwrap();
 

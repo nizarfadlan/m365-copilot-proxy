@@ -147,7 +147,7 @@ fn apply_browser_choice(state: &mut OnboardState) {
 }
 
 impl OnboardState {
-    fn new(mut config: AppConfig) -> Self {
+    fn new(config: AppConfig) -> Self {
         let browsers = list_detected_browsers();
         let mut custom_browser_path = String::new();
         let browser_choice = if let Some(ref exec) = config.edge.executable {
@@ -164,10 +164,14 @@ impl OnboardState {
             0
         };
 
-        #[cfg(target_os = "macos")]
-        if config.ui.tray {
-            config.ui.tray = false;
-        }
+        let config = {
+            let mut config = config;
+            #[cfg(target_os = "macos")]
+            if config.ui.tray {
+                config.ui.tray = false;
+            }
+            config
+        };
 
         Self {
             config,
