@@ -1,6 +1,6 @@
 [package]
 name = "m365-copilot-proxy"
-version = "0.1.0"
+version = "0.1.3"
 edition = "2021"
 authors = ["Nizar Izzuddin Yatim Fadlan <hello@nizarfadlan.dev>"]
 repository = "https://github.com/nizarfadlan/m365-copilot-proxy"
