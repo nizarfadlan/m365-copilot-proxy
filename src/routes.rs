@@ -4,21 +4,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::trace::TraceLayer;
-use tracing::Level;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 use uuid::Uuid;
 
 use crate::config::Settings;
 use crate::copilot::CopilotClient;
 use crate::models::{
     AnthropicMessagesRequest, OpenAIChatRequest, OpenAIResponsesRequest, TranslatedRequest,
+};
+use crate::openapi::{
+    ErrorResponse, HealthResponse, ModelListResponse, TokenStatusResponse,
 };
 use crate::session_store::{PersistentSession, PersistentSessionStore};
 use crate::substrate_client::{SubstrateCopilotClient, SubstrateCopilotError};
@@ -43,6 +47,7 @@ pub struct AppState {
 
 pub fn create_router(state: AppState) -> Router {
     Router::new()
+        .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
         .route("/healthz", get(healthz))
         .route("/v1/token/status", get(token_status))
         .route("/v1/models", get(list_models))
@@ -55,43 +60,61 @@ pub fn create_router(state: AppState) -> Router {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(|req: &axum::http::Request<_>| {
-                    tracing::span!(
-                        Level::INFO,
-                        "http_request",
-                        method = %req.method(),
-                        uri = %req.uri(),
-                    )
-                })
-                .on_response(
-                    |response: &axum::http::Response<_>,
-                     latency: std::time::Duration,
-                     _span: &tracing::Span| {
-                        tracing::info!(
-                            status = %response.status().as_u16(),
-                            latency_ms = latency.as_millis(),
-                            "request completed"
-                        );
-                    },
-                ),
-        )
+        .layer(middleware::from_fn(log_requests))
         .with_state(state)
 }
 
-async fn healthz(State(state): State<AppState>) -> Json<Value> {
+async fn log_requests(request: Request<Body>, next: Next) -> Response {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    tracing::info!(
+        method = %method,
+        uri = %uri,
+        status = response.status().as_u16(),
+        latency_ms = started.elapsed().as_millis(),
+        "request completed"
+    );
+    response
+}
+
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "health",
+    responses(
+        (status = 200, description = "Proxy is running", body = crate::openapi::HealthResponse),
+    )
+)]
+pub async fn healthz(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "status": "ok",
         "token": state.token_store.status().to_json(),
     }))
 }
 
-async fn token_status(State(state): State<AppState>) -> Json<Value> {
+#[utoipa::path(
+    get,
+    path = "/v1/token/status",
+    tag = "token",
+    responses(
+        (status = 200, description = "Substrate JWT status", body = crate::openapi::TokenStatusResponse),
+    )
+)]
+pub async fn token_status(State(state): State<AppState>) -> Json<Value> {
     Json(state.token_store.status().to_json())
 }
 
-async fn list_models(State(state): State<AppState>) -> Json<Value> {
+#[utoipa::path(
+    get,
+    path = "/v1/models",
+    tag = "openai",
+    responses(
+        (status = 200, description = "OpenAI-compatible model list", body = crate::openapi::ModelListResponse),
+    )
+)]
+pub async fn list_models(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "object": "list",
         "data": [{
@@ -102,7 +125,21 @@ async fn list_models(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-async fn chat_completions(
+#[utoipa::path(
+    post,
+    path = "/v1/chat/completions",
+    tag = "openai",
+    params(
+        ("X-M365-Session-Id" = Option<String>, Header, description = "Optional persistent session key"),
+    ),
+    request_body = OpenAIChatRequest,
+    responses(
+        (status = 200, description = "Chat completion (JSON or SSE when stream=true)"),
+        (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponse),
+        (status = 502, description = "Upstream Copilot error", body = crate::openapi::ErrorResponse),
+    )
+)]
+pub async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<OpenAIChatRequest>,
@@ -128,7 +165,21 @@ async fn chat_completions(
     Ok(Json(chat_completion_json(&state.settings.model_alias, &text)).into_response())
 }
 
-async fn openai_responses(
+#[utoipa::path(
+    post,
+    path = "/v1/responses",
+    tag = "openai",
+    params(
+        ("X-M365-Session-Id" = Option<String>, Header, description = "Optional persistent session key"),
+    ),
+    request_body = OpenAIResponsesRequest,
+    responses(
+        (status = 200, description = "OpenAI Responses result (JSON or SSE when stream=true)"),
+        (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponse),
+        (status = 502, description = "Upstream Copilot error", body = crate::openapi::ErrorResponse),
+    )
+)]
+pub async fn openai_responses(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -169,7 +220,21 @@ async fn openai_responses(
     .into_response())
 }
 
-async fn anthropic_messages(
+#[utoipa::path(
+    post,
+    path = "/v1/messages",
+    tag = "anthropic",
+    params(
+        ("X-M365-Session-Id" = Option<String>, Header, description = "Optional persistent session key"),
+    ),
+    request_body = AnthropicMessagesRequest,
+    responses(
+        (status = 200, description = "Anthropic message (JSON or SSE when stream=true)"),
+        (status = 400, description = "Invalid request", body = crate::openapi::ErrorResponse),
+        (status = 502, description = "Upstream Copilot error", body = crate::openapi::ErrorResponse),
+    )
+)]
+pub async fn anthropic_messages(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<AnthropicMessagesRequest>,
@@ -547,3 +612,41 @@ pub fn default_app_state_simple(settings: Settings) -> AppState {
     let token_store = Arc::new(AccessTokenStore::new(settings.access_token.clone(), ".env"));
     default_app_state(settings, PathBuf::from(".env"), token_store)
 }
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "M365 Copilot OpenAI Proxy",
+        version = "0.1.4",
+        description = "Local shim exposing Microsoft 365 Copilot via OpenAI- and Anthropic-compatible HTTP APIs.\n\n\
+            Client API keys are not validated. Substrate JWT (M365 browser session) is required for chat endpoints.",
+        license(name = "Apache-2.0"),
+    ),
+    paths(
+        healthz,
+        token_status,
+        list_models,
+        chat_completions,
+        openai_responses,
+        anthropic_messages,
+    ),
+    components(
+        schemas(
+            HealthResponse,
+            TokenStatusResponse,
+            ModelListResponse,
+            crate::openapi::ModelObject,
+            OpenAIChatRequest,
+            OpenAIResponsesRequest,
+            AnthropicMessagesRequest,
+            ErrorResponse,
+        )
+    ),
+    tags(
+        (name = "health", description = "Health and readiness"),
+        (name = "token", description = "M365 Substrate JWT status"),
+        (name = "openai", description = "OpenAI-compatible endpoints"),
+        (name = "anthropic", description = "Anthropic-compatible endpoints"),
+    )
+)]
+pub struct ApiDoc;

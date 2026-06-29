@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -14,6 +14,7 @@ use crate::token_store::{decode_jwt_payload, is_substrate_token_claims};
 
 const SIGNALR_SEP: char = '\x1e';
 const WS_BASE: &str = "wss://substrate.office.com/m365Copilot/Chathub";
+const CHAT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 
 const VARIANTS: &str =
     "EnableMcpServerWidgets,feature.EnableMcpServerWidgets,feature.EnableLuForChatCIQ,\
@@ -230,6 +231,21 @@ impl SubstrateCopilotClient {
         format!("{payload}{SIGNALR_SEP}")
     }
 
+    fn chat_payload(
+        &self,
+        text: &str,
+        conv_id: &str,
+        session_id: &str,
+        req_id: &str,
+        is_start_of_session: bool,
+    ) -> String {
+        format!(
+            "{}{}",
+            self.chat_invoke(text, conv_id, session_id, req_id, is_start_of_session),
+            metrics_frame()
+        )
+    }
+
     pub async fn chat(
         &self,
         prompt: &str,
@@ -261,31 +277,27 @@ impl SubstrateCopilotClient {
         if let Some(session) = session {
             let guard = session.lock.clone().lock_owned().await;
             let turn = session.reserve_turn();
-            let stream = client
-                .chat_stream_for_turn(
-                    text,
-                    turn.conversation_id,
-                    turn.client_session_id,
-                    turn.is_start_of_session,
-                )
-                .await;
+            let stream = client.chat_stream_for_turn(
+                text,
+                turn.conversation_id,
+                turn.client_session_id,
+                turn.is_start_of_session,
+            );
             Ok(Box::pin(LockedStream {
                 _guard: guard,
                 stream,
             }))
         } else {
-            Ok(client
-                .chat_stream_for_turn(
-                    text,
-                    Uuid::new_v4().to_string(),
-                    Uuid::new_v4().to_string(),
-                    true,
-                )
-                .await)
+            Ok(client.chat_stream_for_turn(
+                text,
+                Uuid::new_v4().to_string(),
+                Uuid::new_v4().to_string(),
+                true,
+            ))
         }
     }
 
-    async fn chat_stream_for_turn(
+    fn chat_stream_for_turn(
         &self,
         text: String,
         conv_id: String,
@@ -294,39 +306,94 @@ impl SubstrateCopilotClient {
     ) -> futures_util::stream::BoxStream<'static, Result<String, SubstrateCopilotError>> {
         let req_id = Uuid::new_v4().to_string();
         let url = self.ws_url(&conv_id, &session_id, &req_id);
-        let chat_invoke =
-            self.chat_invoke(&text, &conv_id, &session_id, &req_id, is_start_of_session);
+        let chat_payload = self.chat_payload(
+            &text,
+            &conv_id,
+            &session_id,
+            &req_id,
+            is_start_of_session,
+        );
 
-        let result = async {
-            let mut request = url
-                .into_client_request()
-                .map_err(|e| SubstrateCopilotError(format!("invalid websocket request: {e}")))?;
+        async_stream::stream! {
+            let mut request = match url.into_client_request() {
+                Ok(r) => r,
+                Err(e) => {
+                    yield Err(SubstrateCopilotError(format!("invalid websocket request: {e}")));
+                    return;
+                }
+            };
             request
                 .headers_mut()
                 .insert("Origin", "https://m365.cloud.microsoft".parse().unwrap());
 
-            let (mut ws, _) = connect_async(request)
+            let (mut ws, _) = match connect_async(request).await {
+                Ok(v) => v,
+                Err(e) => {
+                    yield Err(SubstrateCopilotError(e.to_string()));
+                    return;
+                }
+            };
+
+            if let Err(e) = ws
+                .send(Message::Text(
+                    format!("{{\"protocol\":\"json\",\"version\":1}}{SIGNALR_SEP}").into(),
+                ))
                 .await
-                .map_err(|e| SubstrateCopilotError(e.to_string()))?;
+            {
+                yield Err(SubstrateCopilotError(e.to_string()));
+                return;
+            }
 
-            ws.send(Message::Text(
-                format!("{{\"protocol\":\"json\",\"version\":1}}{SIGNALR_SEP}").into(),
-            ))
-            .await
-            .map_err(|e| SubstrateCopilotError(e.to_string()))?;
-            let _ = ws.next().await;
+            let handshake_deadline = Instant::now() + Duration::from_secs(30);
+            match tokio::time::timeout_at(handshake_deadline.into(), ws.next()).await {
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(e))) => {
+                    yield Err(SubstrateCopilotError(e.to_string()));
+                    return;
+                }
+                Ok(None) => {
+                    yield Err(SubstrateCopilotError(
+                        "websocket closed during handshake".into(),
+                    ));
+                    return;
+                }
+                Err(_) => {
+                    yield Err(SubstrateCopilotError("websocket handshake timed out".into()));
+                    return;
+                }
+            }
 
-            ws.send(Message::Text(chat_invoke.into()))
-                .await
-                .map_err(|e| SubstrateCopilotError(e.to_string()))?;
+            if let Err(e) = ws.send(Message::Text(chat_payload.into())).await {
+                yield Err(SubstrateCopilotError(e.to_string()));
+                return;
+            }
 
+            let deadline = Instant::now() + CHAT_RESPONSE_TIMEOUT;
             let mut fallback_text = String::new();
             let mut yielded_any = false;
-            let mut out = Vec::new();
+            let mut completed = false;
 
-            while let Some(msg) = ws.next().await {
-                let raw = msg.map_err(|e| SubstrateCopilotError(e.to_string()))?;
-                let text = match raw {
+            while !completed {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    yield Err(SubstrateCopilotError("Copilot response timed out".into()));
+                    return;
+                }
+
+                let msg = match tokio::time::timeout(remaining, ws.next()).await {
+                    Ok(Some(Ok(m))) => m,
+                    Ok(Some(Err(e))) => {
+                        yield Err(SubstrateCopilotError(e.to_string()));
+                        return;
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        yield Err(SubstrateCopilotError("Copilot response timed out".into()));
+                        return;
+                    }
+                };
+
+                let text = match msg {
                     Message::Text(t) => t.to_string(),
                     Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
                     Message::Close(_) => break,
@@ -345,10 +412,14 @@ impl SubstrateCopilotClient {
 
                     let t = msg.get("type").and_then(|v| v.as_i64());
                     if t == Some(6) {
+                        let _ = ws
+                            .send(Message::Text(format!("{{\"type\":6}}{SIGNALR_SEP}").into()))
+                            .await;
                         continue;
                     }
 
-                    if t == Some(1) && msg.get("target").and_then(|v| v.as_str()) == Some("update")
+                    if t == Some(1)
+                        && msg.get("target").and_then(|v| v.as_str()) == Some("update")
                     {
                         let args = msg
                             .get("arguments")
@@ -360,10 +431,10 @@ impl SubstrateCopilotClient {
                         if let Some(delta) = args.get("writeAtCursor").and_then(|v| v.as_str()) {
                             if !delta.is_empty() {
                                 if !yielded_any && !fallback_text.is_empty() {
-                                    out.push(Ok(fallback_text.clone()));
+                                    yield Ok(fallback_text.clone());
                                 }
                                 yielded_any = true;
-                                out.push(Ok(delta.to_string()));
+                                yield Ok(delta.to_string());
                             }
                         }
 
@@ -379,23 +450,49 @@ impl SubstrateCopilotClient {
                     }
 
                     if t == Some(3) {
-                        if !yielded_any && !fallback_text.is_empty() {
-                            out.push(Ok(fallback_text.clone()));
+                        if let Some(err) = msg.get("error").and_then(|v| v.as_str()) {
+                            yield Err(SubstrateCopilotError(err.to_string()));
+                            return;
                         }
+                        if !yielded_any && !fallback_text.is_empty() {
+                            yield Ok(fallback_text.clone());
+                        }
+                        completed = true;
+                        break;
+                    }
+
+                    if t == Some(7) {
+                        if let Some(err) = msg.get("error").and_then(|v| v.as_str()) {
+                            yield Err(SubstrateCopilotError(err.to_string()));
+                            return;
+                        }
+                        completed = true;
                         break;
                     }
                 }
             }
 
-            Ok::<_, SubstrateCopilotError>(out)
+            if !completed && !yielded_any && !fallback_text.is_empty() {
+                yield Ok(fallback_text);
+            }
         }
-        .await;
-
-        match result {
-            Ok(chunks) => futures_util::stream::iter(chunks).boxed(),
-            Err(e) => futures_util::stream::once(async move { Err(e) }).boxed(),
-        }
+        .boxed()
     }
+}
+
+fn metrics_frame() -> String {
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let payload = json!({
+        "arguments": [{ "Timestamps": {
+            "ConnectionStart": now,
+            "UserInputStart": now,
+            "ConnectionEstablished": now,
+            "UserInputSubmit": now
+        }}],
+        "target": "Metrics",
+        "type": 1
+    });
+    format!("{payload}{SIGNALR_SEP}")
 }
 
 fn extract_assistant_text(msgs: &Value) -> String {
@@ -439,5 +536,23 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         std::pin::Pin::new(&mut self.stream).poll_next(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metrics_frame_is_required_signalr_payload() {
+        let frame = metrics_frame();
+        assert!(frame.ends_with(SIGNALR_SEP.to_string().as_str()));
+        let json_part = frame.trim_end_matches(SIGNALR_SEP);
+        let value: Value = serde_json::from_str(json_part).unwrap();
+        assert_eq!(value.get("type").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(
+            value.get("target").and_then(|v| v.as_str()),
+            Some("Metrics")
+        );
     }
 }

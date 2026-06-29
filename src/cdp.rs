@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -329,6 +329,9 @@ pub async fn try_auto_refresh(config: &AppConfig, allow_nudge: bool) -> bool {
     if let Some(token) = cdp_extract_token(config.edge.cdp_port, allow_nudge).await {
         if write_token_to(&config.token.env_file, &token).is_ok() {
             info!("token refreshed automatically from browser");
+            if config.edge.headless_when_authenticated {
+                ensure_background_browser(config);
+            }
             return true;
         }
     }
@@ -386,6 +389,9 @@ pub async fn startup_capture_loop(
         if write_token_to(&config.token.env_file, &token).is_ok() {
             info!("startup token capture succeeded");
             status.set_phase(ServicePhase::Ready);
+            if config.edge.headless_when_authenticated {
+                ensure_background_browser(config);
+            }
             return;
         }
     }
@@ -393,15 +399,163 @@ pub async fn startup_capture_loop(
     warn!("startup token capture timed out; use set-token or capture-token");
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserLaunchMode {
+    /// Visible window with M365 Copilot sign-in page.
+    Interactive,
+    /// Headless CDP for token refresh (no visible window).
+    Background,
+}
+
+static BROWSER_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
+static BROWSER_MODE: Mutex<Option<BrowserLaunchMode>> = Mutex::new(None);
+
+fn tracked_browser_mode() -> Option<BrowserLaunchMode> {
+    *BROWSER_MODE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn stop_tracked_browser() {
+    if let Ok(mut guard) = BROWSER_CHILD.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    if let Ok(mut mode) = BROWSER_MODE.lock() {
+        *mode = None;
+    }
+}
+
+fn wait_for_cdp_port_free(cdp_port: u16, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !cdp_port_reachable(cdp_port) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn cdp_browser_has_m365_tab(cdp_port: u16) -> bool {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .ok()
+        .and_then(|client| {
+            client
+                .get(format!("http://127.0.0.1:{cdp_port}/json"))
+                .send()
+                .ok()
+        })
+        .and_then(|resp| resp.json::<Vec<Value>>().ok())
+        .map(|tabs| find_m365_page(&tabs).is_some())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn kill_cdp_listeners_on_port(cdp_port: u16) {
+    let Ok(output) = Command::new("lsof")
+        .args(["-ti", &format!("tcp:{cdp_port}")])
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    for pid in String::from_utf8_lossy(&output.stdout).lines() {
+        let pid = pid.trim();
+        if !pid.is_empty() {
+            let _ = Command::new("kill").arg(pid).status();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn kill_cdp_listeners_on_port(cdp_port: u16) {
+    let Ok(output) = Command::new("netstat")
+        .args(["-ano", "-p", "tcp"])
+        .output()
+    else {
+        return;
+    };
+    let port_suffix = format!(":{cdp_port}");
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if !line.contains("LISTENING") || !line.contains(&port_suffix) {
+            continue;
+        }
+        if let Some(pid) = line.split_whitespace().last() {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/PID", pid])
+                .status();
+        }
+    }
+}
+
 pub fn launch_debug_edge(config: &AppConfig) {
-    launch_debug_browser(config);
+    launch_debug_browser_interactive(config);
 }
 
 pub fn launch_debug_browser(config: &AppConfig) {
+    launch_debug_browser_interactive(config);
+}
+
+pub fn launch_debug_browser_interactive(config: &AppConfig) {
     let profile_dir = config.edge_profile_dir();
     let cdp_port = config.edge.cdp_port;
     let browser = browser_executable(config);
-    spawn_debug_browser(cdp_port, &profile_dir, &browser);
+    spawn_debug_browser(cdp_port, &profile_dir, &browser, BrowserLaunchMode::Interactive);
+}
+
+pub fn ensure_background_browser(config: &AppConfig) {
+    if !config.edge.headless_when_authenticated {
+        return;
+    }
+
+    let cdp_port = config.edge.cdp_port;
+    if cdp_port_reachable(cdp_port) {
+        if tracked_browser_mode() == Some(BrowserLaunchMode::Background) {
+            return;
+        }
+
+        let visible_session = tracked_browser_mode() == Some(BrowserLaunchMode::Interactive)
+            || cdp_browser_has_m365_tab(cdp_port);
+        if !visible_session {
+            return;
+        }
+
+        info!("switching browser to headless CDP after authentication");
+        stop_tracked_browser();
+        kill_cdp_listeners_on_port(cdp_port);
+        wait_for_cdp_port_free(cdp_port, Duration::from_secs(3));
+    }
+
+    if cdp_port_reachable(cdp_port) {
+        warn!(
+            cdp_port,
+            "CDP port still in use; cannot launch headless browser"
+        );
+        return;
+    }
+
+    let profile_dir = config.edge_profile_dir();
+    let browser = browser_executable(config);
+    spawn_debug_browser(cdp_port, &profile_dir, &browser, BrowserLaunchMode::Background);
+}
+
+pub fn cdp_port_reachable(cdp_port: u16) -> bool {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(1))
+        .build()
+        .ok()
+        .and_then(|client| {
+            client
+                .get(format!("http://127.0.0.1:{cdp_port}/json/version"))
+                .send()
+                .ok()
+        })
+        .map(|resp| resp.status().is_success())
+        .unwrap_or(false)
 }
 
 pub fn launch_debug_edge_on_port(cdp_port: u16, profile_dir: Option<PathBuf>) {
@@ -415,27 +569,56 @@ pub fn launch_debug_browser_on_port(
 ) {
     let profile_dir = profile_dir.unwrap_or_else(default_profile_dir);
     let browser = resolve_browser_executable(executable.as_deref());
-    spawn_debug_browser(cdp_port, &profile_dir, &browser);
+    spawn_debug_browser(cdp_port, &profile_dir, &browser, BrowserLaunchMode::Interactive);
 }
 
-fn spawn_debug_browser(cdp_port: u16, profile_dir: &Path, browser: &Path) {
+fn spawn_debug_browser(
+    cdp_port: u16,
+    profile_dir: &Path,
+    browser: &Path,
+    mode: BrowserLaunchMode,
+) {
+    stop_tracked_browser();
     std::fs::create_dir_all(profile_dir).ok();
     let browser = resolve_browser_executable(Some(browser));
     let mut cmd = Command::new(&browser);
     cmd.arg(format!("--remote-debugging-port={cdp_port}"))
         .arg(format!("--user-data-dir={}", profile_dir.display()))
         .arg("--no-first-run")
-        .arg("https://m365.cloud.microsoft/chat")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+
+    match mode {
+        BrowserLaunchMode::Interactive => {
+            cmd.arg("https://m365.cloud.microsoft/chat");
+        }
+        BrowserLaunchMode::Background => {
+            cmd.args([
+                "--headless=new",
+                "--disable-gpu",
+                "--no-default-browser-check",
+                "https://m365.cloud.microsoft/chat",
+            ]);
+        }
+    }
+
     match cmd.spawn() {
-        Ok(_) => info!(
-            cdp_port,
-            browser = %browser.display(),
-            profile = %profile_dir.display(),
-            "launched Chromium browser with remote debugging"
-        ),
+        Ok(child) => {
+            if let Ok(mut guard) = BROWSER_CHILD.lock() {
+                *guard = Some(child);
+            }
+            if let Ok(mut mode_guard) = BROWSER_MODE.lock() {
+                *mode_guard = Some(mode);
+            }
+            info!(
+                cdp_port,
+                mode = ?mode,
+                browser = %browser.display(),
+                profile = %profile_dir.display(),
+                "launched Chromium browser with remote debugging"
+            );
+        }
         Err(e) => warn!(
             browser = %browser.display(),
             error = %e,

@@ -35,7 +35,7 @@ copilot-openai-proxy serve
 
 Server: `http://127.0.0.1:8000`
 
-On first run the proxy opens a dedicated **Chromium browser** window (Edge, Chrome, or Brave — auto-detected). Sign in once; the Substrate token is saved to `.env` (or the path in config).
+On first run the proxy opens a **Chromium browser** window for sign-in when no token exists. Once authenticated, the browser runs **headless in the background** for CDP token refresh (config: `headless_when_authenticated = true`).
 
 Browser profile default: `~/.m365-copilot-proxy/edge-profile`
 
@@ -105,6 +105,88 @@ When enabled (default), a menu bar icon (macOS) / system tray icon (Windows & Li
 
 Disable: `--no-tray` or `M365_TRAY=false`.
 
+## API Reference
+
+Interactive docs (auto-generated from route handlers via **utoipa**):
+
+- Swagger UI: `http://127.0.0.1:8000/docs`
+- OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
+
+Base URL: `http://127.0.0.1:8000` (change via `[server]` in config).
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/healthz` | Health check + Substrate token summary |
+| `GET` | `/v1/token/status` | Substrate JWT status (valid / seconds remaining) |
+| `GET` | `/v1/models` | OpenAI-compatible model list |
+| `POST` | `/v1/chat/completions` | OpenAI Chat Completions (JSON or SSE stream) |
+| `POST` | `/v1/responses` | OpenAI Responses API (JSON or SSE stream) |
+| `POST` | `/v1/messages` | Anthropic Messages API (JSON or SSE stream) |
+
+### Authentication — two layers
+
+**1. Client → proxy (OpenAI/Anthropic SDK API key)**
+
+The proxy **does not validate** `Authorization: Bearer …` or client `apiKey` today.
+Any string works — clients use `dummy` because SDKs require a non-empty key:
+
+```bash
+export OPENAI_API_KEY="dummy"
+export ANTHROPIC_API_KEY="dummy"
+```
+
+There is **no config option yet** to enforce a custom client API key. The server
+listens on `127.0.0.1` by default (local only). To expose on LAN, set
+`M365_HOST=0.0.0.0` and protect with a firewall or reverse proxy.
+
+**2. Proxy → Microsoft (Substrate token)**
+
+This is the real credential. It is the browser JWT from your M365 Copilot session,
+stored in `.env` / `M365_ACCESS_TOKEN` and auto-refreshed via CDP. Without it,
+chat endpoints return upstream errors.
+
+Check token status:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/token/status
+curl -s http://127.0.0.1:8000/healthz
+```
+
+### Session / multi-turn context
+
+| Mechanism | Example |
+|-----------|---------|
+| Model suffix | `"model": "m365-copilot:persist"` + `"user": "my-session"` |
+| Header | `X-M365-Session-Id: my-session` |
+
+Default model alias: `m365-copilot` (config: `M365_MODEL_ALIAS` / `[token].model_alias`).
+
+### Examples
+
+```bash
+# Models
+curl -s http://127.0.0.1:8000/v1/models
+
+# Chat (OpenAI)
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer dummy' \
+  -d '{"model":"m365-copilot","messages":[{"role":"user","content":"hi"}]}'
+
+# Streaming
+curl -N http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"m365-copilot","stream":true,"messages":[{"role":"user","content":"hi"}]}'
+
+# Anthropic format
+curl -s http://127.0.0.1:8000/v1/messages \
+  -H 'Content-Type: application/json' \
+  -H 'x-api-key: dummy' \
+  -d '{"model":"m365-copilot","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}'
+```
+
 ## Configuration
 
 Precedence: **CLI flags → environment variables → `config.toml` → defaults**.
@@ -136,6 +218,7 @@ See [`config.example.toml`](config.example.toml) for all options.
 | `M365_REFRESH_RETRY_SECONDS` | Retry interval on refresh failure |
 | `M365_LAUNCH_EDGE` | Launch browser on start |
 | `M365_BROWSER_EXECUTABLE` | Path to Edge/Chrome/Brave/Chromium binary |
+| `M365_EDGE_HEADLESS_WHEN_AUTHENTICATED` | `true`/`false` — headless CDP when token valid (default `true`) |
 | `M365_EDGE_PROFILE_DIR` | Browser user-data directory |
 | `M365_LOG_LEVEL` | `trace`, `debug`, `info`, `warn`, `error` |
 | `M365_LOG_FORMAT` | `pretty`, `compact`, `json` |
@@ -194,6 +277,8 @@ See [upstream README](https://github.com/kuchris/m365-copilot-openai-proxy) for 
 
 ## Test
 
+See [API Reference](#api-reference) for endpoint details and curl examples.
+
 ```bash
 curl -s http://127.0.0.1:8000/healthz
 curl -s http://127.0.0.1:8000/v1/chat/completions \
@@ -206,9 +291,10 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
 | Setting | Value |
 |---------|-------|
 | Base URL | `http://127.0.0.1:8000/v1` |
-| API Key | `dummy` |
+| API Key | any value, e.g. `dummy` (not validated by proxy) |
 | Model | `m365-copilot` |
-| Persistent | `m365-copilot:persist` or header `X-M365-Session-Id` |
+| Persistent chat | `m365-copilot:persist` or header `X-M365-Session-Id` |
+| Real auth | Substrate JWT in `.env` (browser sign-in) |
 
 ## CI / Releases
 

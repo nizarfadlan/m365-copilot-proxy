@@ -24,6 +24,7 @@ refresh_retry_seconds = 60
 [edge]
 cdp_port = 9222
 launch_on_start = true
+headless_when_authenticated = true  # hide browser when token already valid
 # Chromium browser for CDP token capture (Edge, Chrome, Brave, Chromium).
 # Auto-detected if unset (system Chrome/Edge/Brave or Playwright cache).
 #   macOS:   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"

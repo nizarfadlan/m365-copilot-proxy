@@ -6,8 +6,8 @@ use tracing::{error, info, warn};
 
 use crate::bootstrap::{bootstrap, print_welcome};
 use crate::cdp::{
-    launch_debug_edge, needs_substrate_token, read_token_from, startup_capture_loop,
-    try_auto_refresh, write_token_to,
+    ensure_background_browser, launch_debug_browser_interactive, needs_substrate_token,
+    read_token_from, startup_capture_loop, try_auto_refresh, write_token_to,
 };
 use crate::config::{apply_cli_overrides, AppConfig, ServeOverrides};
 use crate::doctor::format_bind_error;
@@ -30,7 +30,11 @@ pub async fn run_serve_with_config(
     apply_cli_overrides(&mut config, &overrides);
     let bootstrap_report = bootstrap(&overrides)?;
     let log_buffer = LogBuffer::new();
-    init_logging(&config.logging, log_buffer.clone())?;
+    init_logging(
+        &config.logging,
+        log_buffer.clone(),
+        config.ui.tui && atty::is(atty::Stream::Stdout),
+    )?;
     log_banner();
     print_welcome(&bootstrap_report, &config);
 
@@ -50,8 +54,13 @@ pub async fn run_serve_with_config(
     );
 
     loop {
+        let token_missing = needs_substrate_token(read_token_from(&config.token.env_file).as_deref());
         if config.edge.launch_on_start {
-            launch_debug_edge(&config);
+            if token_missing {
+                launch_debug_browser_interactive(&config);
+            } else if config.edge.headless_when_authenticated {
+                ensure_background_browser(&config);
+            }
         }
 
         let settings = config.settings();
@@ -141,8 +150,8 @@ pub async fn run_serve_with_config(
                     break;
                 }
                 UiAction::LaunchEdge => {
-                    info!("launching debug Edge window");
-                    launch_debug_edge(&config);
+                    info!("launching debug browser window");
+                    launch_debug_browser_interactive(&config);
                 }
             }
         }

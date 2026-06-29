@@ -1,27 +1,27 @@
 use serde::Deserialize;
-use serde_json::Value;
+use utoipa::ToSchema;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ContentPart {
     #[serde(rename = "type")]
     pub part_type: String,
     pub text: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct OpenAIMessage {
     pub role: String,
     pub content: MessageContent,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum MessageContent {
     Text(String),
     Parts(Vec<ContentPart>),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct OpenAIChatRequest {
     pub model: String,
     pub messages: Vec<OpenAIMessage>,
@@ -31,13 +31,13 @@ pub struct OpenAIChatRequest {
     pub user: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AnthropicMessage {
     pub role: String,
     pub content: MessageContent,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AnthropicMessagesRequest {
     pub model: String,
     pub messages: Vec<AnthropicMessage>,
@@ -48,7 +48,7 @@ pub struct AnthropicMessagesRequest {
     pub temperature: Option<f64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct OpenAIResponsesRequest {
     pub model: String,
     pub input: ResponsesInput,
@@ -57,11 +57,11 @@ pub struct OpenAIResponsesRequest {
     pub stream: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum ResponsesInput {
     Text(String),
-    Messages(Vec<Value>),
+    Messages(Vec<serde_json::Value>),
 }
 
 #[derive(Debug, Clone)]

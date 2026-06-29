@@ -194,8 +194,13 @@ fn draw_ui(
         Line::from(vec![
             Span::styled("Browser ", Style::default().fg(Color::DarkGray)),
             Span::raw(format!(
-                "CDP :{} · auto-refresh {} · capture {}",
+                "CDP :{} · {} · auto-refresh {} · capture {}",
                 ctx.config.edge.cdp_port,
+                if ctx.config.edge.headless_when_authenticated {
+                    "headless when authed"
+                } else {
+                    "visible browser"
+                },
                 on_off(ctx.config.token.auto_refresh),
                 on_off(ctx.config.token.capture_on_start),
             )),
@@ -216,12 +221,13 @@ fn draw_ui(
         .skip(start)
         .take(visible_height)
         .map(|line| {
+            let msg = truncate_line(&line.message, chunks[2].width.saturating_sub(8) as usize);
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("{:5} ", line.level.to_uppercase()),
                     Style::default().fg(level_color(&line.level)),
                 ),
-                Span::raw(line.message.clone()),
+                Span::raw(msg),
             ]))
         })
         .collect();
@@ -250,6 +256,17 @@ fn on_off(value: bool) -> &'static str {
     } else {
         "off"
     }
+}
+
+fn truncate_line(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let trimmed: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{trimmed}…")
 }
 
 async fn wait_for_ctrl_c(action_tx: mpsc::Sender<UiAction>) {

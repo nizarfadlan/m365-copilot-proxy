@@ -59,6 +59,8 @@ pub struct EdgeConfig {
     /// Chromium-based browser binary (Edge, Chrome, Brave, Chromium). Auto-detected if unset.
     pub executable: Option<PathBuf>,
     pub profile_dir: Option<PathBuf>,
+    /// When a valid token exists, launch headless CDP instead of a visible browser window.
+    pub headless_when_authenticated: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -107,6 +109,7 @@ impl Default for EdgeConfig {
             launch_on_start: true,
             executable: None,
             profile_dir: None,
+            headless_when_authenticated: true,
         }
     }
 }
@@ -298,6 +301,9 @@ fn apply_env_overrides(config: &mut AppConfig) {
     }
     if let Ok(v) = std::env::var("M365_EDGE_PROFILE_DIR") {
         config.edge.profile_dir = Some(PathBuf::from(v));
+    }
+    if let Ok(v) = std::env::var("M365_EDGE_HEADLESS_WHEN_AUTHENTICATED") {
+        config.edge.headless_when_authenticated = parse_bool(&v);
     }
     if let Ok(v) = std::env::var("M365_BROWSER_EXECUTABLE") {
         config.edge.executable = Some(PathBuf::from(v));
