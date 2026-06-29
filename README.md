@@ -47,6 +47,7 @@ Auto-refresh uses **Chrome DevTools Protocol (CDP)**. Any Chromium-based browser
 - Google Chrome
 - Brave
 - Chromium
+- **Playwright** Chromium (`~/Library/Caches/ms-playwright/` on macOS)
 
 Set explicitly in `config.toml`:
 
@@ -56,6 +57,20 @@ executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ```
 
 Or via env: `M365_BROWSER_EXECUTABLE=/usr/bin/google-chrome`
+
+If unset, the proxy auto-detects the first available browser (system install or Playwright cache). A configured path is always used when it exists on disk.
+
+### First-run setup (onboarding)
+
+On first run, an interactive **setup wizard** runs before the proxy starts (TTY required):
+
+```bash
+copilot-openai-proxy serve          # wizard on first run
+copilot-openai-proxy onboard        # re-run setup anytime
+copilot-openai-proxy serve --skip-onboarding
+```
+
+The wizard lets you pick a detected browser (including Playwright), set listen/CDP ports, and toggle token capture options.
 
 Firefox and Safari are **not** supported for auto-refresh (different debug protocols). Use `set-token` manually instead.
 

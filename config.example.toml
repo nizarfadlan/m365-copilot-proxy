@@ -25,7 +25,7 @@ refresh_retry_seconds = 60
 cdp_port = 9222
 launch_on_start = true
 # Chromium browser for CDP token capture (Edge, Chrome, Brave, Chromium).
-# Auto-detected if unset. Examples:
+# Auto-detected if unset (system Chrome/Edge/Brave or Playwright cache).
 #   macOS:   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 #   Linux:   "/usr/bin/google-chrome"
 #   Windows: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"

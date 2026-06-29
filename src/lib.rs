@@ -6,6 +6,7 @@ pub mod doctor;
 pub mod logging;
 pub mod models;
 pub mod routes;
+pub mod onboarding;
 pub mod runtime;
 pub mod runtime_status;
 pub mod session_store;

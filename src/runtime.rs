@@ -9,7 +9,7 @@ use crate::cdp::{
     launch_debug_edge, needs_substrate_token, read_token_from, startup_capture_loop,
     try_auto_refresh, write_token_to,
 };
-use crate::config::{AppConfig, ServeOverrides};
+use crate::config::{apply_cli_overrides, AppConfig, ServeOverrides};
 use crate::doctor::format_bind_error;
 use crate::logging::{init_logging, log_banner, LogBuffer};
 use crate::routes::{create_router, default_app_state};
@@ -19,9 +19,17 @@ use crate::tray::spawn_tray;
 use crate::tui::{run_tui, TuiContext, UiAction};
 
 pub async fn run_serve(overrides: ServeOverrides) -> Result<(), String> {
+    let config = AppConfig::load(&overrides);
+    run_serve_with_config(overrides, config).await
+}
+
+pub async fn run_serve_with_config(
+    overrides: ServeOverrides,
+    mut config: AppConfig,
+) -> Result<(), String> {
+    apply_cli_overrides(&mut config, &overrides);
     let bootstrap_report = bootstrap(&overrides)?;
     let log_buffer = LogBuffer::new();
-    let config = AppConfig::load(&overrides);
     init_logging(&config.logging, log_buffer.clone())?;
     log_banner();
     print_welcome(&bootstrap_report, &config);

@@ -6,9 +6,12 @@ use tracing::error;
 
 use m365_copilot_proxy::bootstrap::bootstrap;
 use m365_copilot_proxy::cdp::launch_debug_browser;
-use m365_copilot_proxy::config::{AppConfig, ServeOverrides};
+use m365_copilot_proxy::config::{resolve_config_path, AppConfig, ServeOverrides};
 use m365_copilot_proxy::doctor::run_doctor;
-use m365_copilot_proxy::runtime::{capture_token_interactive, run_serve, set_token_interactive};
+use m365_copilot_proxy::onboarding::{maybe_run_onboarding, run_onboarding};
+use m365_copilot_proxy::runtime::{
+    capture_token_interactive, run_serve_with_config, set_token_interactive,
+};
 
 #[derive(Parser)]
 #[command(name = "copilot-openai-proxy")]
@@ -51,6 +54,13 @@ enum Commands {
         no_tray: bool,
         #[arg(long, env = "M365_LOG_LEVEL")]
         log_level: Option<String>,
+        #[arg(long, help = "Skip first-run interactive setup wizard")]
+        skip_onboarding: bool,
+    },
+    /// Interactive setup wizard for config.toml
+    Onboard {
+        #[arg(long, help = "Path to config.toml")]
+        config: Option<PathBuf>,
     },
     /// Verify Edge, ports, token, and CDP before serving
     Doctor {
@@ -129,6 +139,7 @@ async fn main() {
             launch_debug_browser(&cfg);
             Ok(())
         }
+        Commands::Onboard { config } => run_onboard_command(config),
         Commands::Serve {
             config,
             host,
@@ -143,6 +154,7 @@ async fn main() {
             no_tui,
             no_tray,
             log_level,
+            skip_onboarding,
         } => {
             let overrides = ServeOverrides {
                 config_path: config,
@@ -158,11 +170,9 @@ async fn main() {
                 no_tui,
                 no_tray,
                 log_level,
+                skip_onboarding,
             };
-            match bootstrap(&overrides) {
-                Err(e) => Err(e),
-                Ok(_) => run_serve(overrides).await,
-            }
+            run_serve_command(overrides).await
         }
     };
 
@@ -175,4 +185,28 @@ async fn main() {
 
 fn load_config(overrides: &ServeOverrides) -> AppConfig {
     AppConfig::load(overrides)
+}
+
+fn run_onboard_command(config: Option<PathBuf>) -> Result<(), String> {
+    let overrides = ServeOverrides {
+        config_path: config,
+        ..Default::default()
+    };
+    bootstrap(&overrides)?;
+    let config_path = resolve_config_path(&overrides).ok_or_else(|| {
+        "could not determine config path; pass --config or run from a writable directory".to_string()
+    })?;
+    let cfg = AppConfig::load(&overrides);
+    run_onboarding(&cfg, &config_path)?;
+    println!("Configuration saved to {}.", config_path.display());
+    Ok(())
+}
+
+async fn run_serve_command(overrides: ServeOverrides) -> Result<(), String> {
+    let report = bootstrap(&overrides)?;
+    let config_path = resolve_config_path(&overrides)
+        .ok_or_else(|| "could not determine config path".to_string())?;
+    let config = AppConfig::load(&overrides);
+    let config = maybe_run_onboarding(&report, &overrides, &config, &config_path)?;
+    run_serve_with_config(overrides, config).await
 }

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Runtime token/model settings passed to the Copilot client.
 #[derive(Debug, Clone)]
@@ -20,7 +20,7 @@ impl Default for Settings {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct AppConfig {
     pub server: ServerConfig,
@@ -30,14 +30,14 @@ pub struct AppConfig {
     pub ui: UiConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TokenConfig {
     pub access_token: Option<String>,
@@ -51,7 +51,7 @@ pub struct TokenConfig {
     pub refresh_retry_seconds: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct EdgeConfig {
     pub cdp_port: u16,
@@ -61,14 +61,14 @@ pub struct EdgeConfig {
     pub profile_dir: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LoggingConfig {
     pub level: String,
     pub format: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct UiConfig {
     pub tui: bool,
@@ -145,6 +145,7 @@ pub struct ServeOverrides {
     pub no_tui: bool,
     pub no_tray: bool,
     pub log_level: Option<String>,
+    pub skip_onboarding: bool,
 }
 
 impl AppConfig {
@@ -195,6 +196,21 @@ impl AppConfig {
                 .join("edge-profile")
         })
     }
+
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+        }
+        let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
+        std::fs::write(path, text).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+pub fn resolve_config_path(overrides: &ServeOverrides) -> Option<PathBuf> {
+    discover_config_path(overrides.config_path.as_deref())
 }
 
 fn discover_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
@@ -300,7 +316,7 @@ fn apply_env_overrides(config: &mut AppConfig) {
     }
 }
 
-fn apply_cli_overrides(config: &mut AppConfig, overrides: &ServeOverrides) {
+pub fn apply_cli_overrides(config: &mut AppConfig, overrides: &ServeOverrides) {
     if let Some(ref host) = overrides.host {
         config.server.host = host.clone();
     }

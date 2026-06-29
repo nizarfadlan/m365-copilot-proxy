@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -413,13 +414,14 @@ pub fn launch_debug_browser_on_port(
     executable: Option<PathBuf>,
 ) {
     let profile_dir = profile_dir.unwrap_or_else(default_profile_dir);
-    let browser = executable.unwrap_or_else(discover_chromium_browser);
+    let browser = resolve_browser_executable(executable.as_deref());
     spawn_debug_browser(cdp_port, &profile_dir, &browser);
 }
 
 fn spawn_debug_browser(cdp_port: u16, profile_dir: &Path, browser: &Path) {
     std::fs::create_dir_all(profile_dir).ok();
-    let mut cmd = Command::new(browser);
+    let browser = resolve_browser_executable(Some(browser));
+    let mut cmd = Command::new(&browser);
     cmd.arg(format!("--remote-debugging-port={cdp_port}"))
         .arg(format!("--user-data-dir={}", profile_dir.display()))
         .arg("--no-first-run")
@@ -450,11 +452,91 @@ fn default_profile_dir() -> PathBuf {
 }
 
 pub fn browser_executable(config: &AppConfig) -> PathBuf {
-    config
-        .edge
-        .executable
-        .clone()
-        .unwrap_or_else(discover_chromium_browser)
+    resolve_browser_executable(config.edge.executable.as_deref())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedBrowser {
+    pub label: String,
+    pub path: PathBuf,
+}
+
+/// All Chromium browsers found on this system (system installs, Playwright cache, etc.).
+pub fn list_detected_browsers() -> Vec<DetectedBrowser> {
+    let mut browsers = Vec::new();
+    let mut seen = HashSet::new();
+
+    for candidate in chromium_install_paths() {
+        if candidate.exists() && seen.insert(candidate.clone()) {
+            browsers.push(DetectedBrowser {
+                label: system_browser_label(&candidate),
+                path: candidate,
+            });
+        }
+    }
+
+    for name in chromium_path_names() {
+        let path = PathBuf::from(name);
+        if command_exists(&path) {
+            let resolved = if path.is_absolute() {
+                path.clone()
+            } else {
+                path
+            };
+            if seen.insert(resolved.clone()) {
+                browsers.push(DetectedBrowser {
+                    label: format!("{name} (PATH)"),
+                    path: resolved,
+                });
+            }
+        }
+    }
+
+    for (label, path) in discover_playwright_chromium_binaries() {
+        if seen.insert(path.clone()) {
+            browsers.push(DetectedBrowser { label, path });
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    for path in discover_chromium_via_mdfind_all() {
+        if seen.insert(path.clone()) {
+            browsers.push(DetectedBrowser {
+                label: system_browser_label(&path),
+                path,
+            });
+        }
+    }
+
+    browsers
+}
+
+/// Resolve a Chromium browser binary: honor a configured path when it exists,
+/// otherwise auto-detect an installed Edge/Chrome/Brave/Chromium.
+fn resolve_browser_executable(configured: Option<&Path>) -> PathBuf {
+    if let Some(path) = configured {
+        if browser_path_usable(path) {
+            return path.to_path_buf();
+        }
+        if let Some(found) = discover_chromium_browser_if_present() {
+            warn!(
+                configured = %path.display(),
+                resolved = %found.display(),
+                "configured browser not found; using auto-detected browser"
+            );
+            return found;
+        }
+        warn!(
+            configured = %path.display(),
+            "configured browser not found; no Chromium browser detected on this system"
+        );
+        return path.to_path_buf();
+    }
+    discover_chromium_browser()
+}
+
+fn browser_path_usable(path: &Path) -> bool {
+    path.exists() || command_exists(path)
 }
 
 pub fn edge_executable_path() -> PathBuf {
@@ -474,10 +556,7 @@ pub fn browser_available(config: &AppConfig) -> bool {
 }
 
 fn chromium_browser_available(executable: Option<&Path>) -> bool {
-    if let Some(path) = executable {
-        return path.exists() || command_exists(path);
-    }
-    discover_chromium_browser_if_present().is_some()
+    browser_path_usable(&resolve_browser_executable(executable))
 }
 
 pub fn discover_chromium_browser() -> PathBuf {
@@ -485,17 +564,176 @@ pub fn discover_chromium_browser() -> PathBuf {
 }
 
 fn discover_chromium_browser_if_present() -> Option<PathBuf> {
-    for candidate in chromium_install_paths() {
+    list_detected_browsers().into_iter().next().map(|b| b.path)
+}
+
+#[cfg(target_os = "macos")]
+fn discover_chromium_via_mdfind_all() -> Vec<PathBuf> {
+    const BUNDLE_IDS: &[&str] = &[
+        "com.microsoft.edgemac",
+        "com.google.Chrome",
+        "com.brave.Browser",
+        "org.chromium.Chromium",
+    ];
+    let mut found = Vec::new();
+    for bundle_id in BUNDLE_IDS {
+        let Ok(output) = Command::new("mdfind")
+            .arg(format!("kMDItemCFBundleIdentifier == '{bundle_id}'"))
+            .output()
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let app_path = line.trim();
+            if app_path.is_empty() {
+                continue;
+            }
+            let binary = macos_app_binary_path(app_path);
+            if binary.exists() {
+                found.push(binary);
+            }
+        }
+    }
+    found
+}
+
+#[cfg(not(target_os = "macos"))]
+fn discover_chromium_via_mdfind_all() -> Vec<PathBuf> {
+    vec![]
+}
+
+fn discover_playwright_chromium_binaries() -> Vec<(String, PathBuf)> {
+    let Some(cache) = playwright_cache_dir() else {
+        return vec![];
+    };
+    if !cache.is_dir() {
+        return vec![];
+    }
+    let Ok(entries) = std::fs::read_dir(&cache) else {
+        return vec![];
+    };
+
+    let mut dirs: Vec<_> = entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("chromium-") && !name.contains("headless_shell")
+        })
+        .collect();
+    dirs.sort_by(|a, b| {
+        playwright_revision(&b.file_name())
+            .cmp(&playwright_revision(&a.file_name()))
+    });
+
+    let mut found = Vec::new();
+    for entry in dirs {
+        let dir = entry.path();
+        let revision = entry.file_name().to_string_lossy().to_string();
+        if let Some(path) = playwright_chromium_binary_in_dir(&dir) {
+            found.push((format!("Playwright {revision}"), path));
+        }
+    }
+    found
+}
+
+fn playwright_revision(name: &std::ffi::OsStr) -> u64 {
+    name.to_string_lossy()
+        .strip_prefix("chromium-")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+fn playwright_chromium_binary_in_dir(dir: &Path) -> Option<PathBuf> {
+    for relative in playwright_chromium_relative_paths() {
+        let candidate = dir.join(relative);
         if candidate.exists() {
             return Some(candidate);
         }
     }
-    for name in chromium_path_names() {
-        if command_exists(Path::new(name)) {
-            return Some(PathBuf::from(name));
-        }
-    }
     None
+}
+
+fn playwright_chromium_relative_paths() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            PathBuf::from(
+                "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+            ),
+            PathBuf::from(
+                "chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+            ),
+            PathBuf::from("chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium"),
+            PathBuf::from("chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
+        ]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        vec![PathBuf::from("chrome-linux/chrome")]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        vec![PathBuf::from("chrome-win/chrome.exe")]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        vec![]
+    }
+}
+
+fn playwright_cache_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        dirs::cache_dir().map(|d| d.join("ms-playwright"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var("XDG_CACHE_HOME")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(dirs::cache_dir)
+            .map(|d| d.join("ms-playwright"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("LOCALAPPDATA")
+            .ok()
+            .map(|d| PathBuf::from(d).join("ms-playwright"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+fn system_browser_label(path: &Path) -> String {
+    let file = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Chromium");
+    if path.to_string_lossy().contains("ms-playwright") {
+        return format!("{file} (Playwright)");
+    }
+    match file {
+        "Microsoft Edge" => "Microsoft Edge".into(),
+        "Google Chrome" => "Google Chrome".into(),
+        "Brave Browser" => "Brave".into(),
+        "Chromium" | "Google Chrome for Testing" => format!("{file} (system)"),
+        _ => file.into(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_binary_path(app_path: &str) -> PathBuf {
+    let app_name = Path::new(app_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("App");
+    PathBuf::from(app_path).join(format!("Contents/MacOS/{app_name}"))
 }
 
 fn command_exists(path: &Path) -> bool {
@@ -537,12 +775,22 @@ fn chromium_install_paths() -> Vec<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        vec![
+        let mut paths = vec![
             PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
             PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
             PathBuf::from("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
             PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
-        ]
+        ];
+        if let Some(home) = dirs::home_dir() {
+            let user_apps = home.join("Applications");
+            paths.extend([
+                user_apps.join("Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+                user_apps.join("Google Chrome.app/Contents/MacOS/Google Chrome"),
+                user_apps.join("Brave Browser.app/Contents/MacOS/Brave Browser"),
+                user_apps.join("Chromium.app/Contents/MacOS/Chromium"),
+            ]);
+        }
+        paths
     }
     #[cfg(target_os = "linux")]
     {
@@ -636,16 +884,63 @@ mod tests {
     use crate::config::AppConfig;
 
     #[test]
-    fn browser_executable_uses_config_override() {
+    fn browser_executable_uses_valid_config_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake_browser = dir.path().join("chrome");
+        std::fs::write(&fake_browser, b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_browser, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
         let mut config = AppConfig::default();
-        config.edge.executable = Some(PathBuf::from("/custom/chrome"));
-        assert_eq!(browser_executable(&config), PathBuf::from("/custom/chrome"));
+        config.edge.executable = Some(fake_browser.clone());
+        assert_eq!(browser_executable(&config), fake_browser);
+    }
+
+    #[test]
+    fn browser_executable_falls_back_when_configured_path_missing() {
+        let mut config = AppConfig::default();
+        config.edge.executable = Some(PathBuf::from("/definitely/missing-browser-xyz"));
+        let resolved = browser_executable(&config);
+        if let Some(found) = discover_chromium_browser_if_present() {
+            assert_eq!(resolved, found);
+            assert!(browser_path_usable(&resolved));
+        } else {
+            assert_eq!(resolved, PathBuf::from("/definitely/missing-browser-xyz"));
+        }
+    }
+
+    #[test]
+    fn discovers_playwright_chromium_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let chromium_dir = dir.path().join("chromium-9999");
+        let binary = chromium_dir.join(
+            "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+        );
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::write(&binary, b"").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert_eq!(
+            playwright_chromium_binary_in_dir(&chromium_dir).as_deref(),
+            Some(binary.as_path())
+        );
     }
 
     #[test]
     fn browser_available_checks_config_path() {
         let mut config = AppConfig::default();
-        config.edge.executable = Some(PathBuf::from("/definitely/missing-browser"));
-        assert!(!browser_available(&config));
+        config.edge.executable = Some(PathBuf::from("/definitely/missing-browser-xyz"));
+        assert_eq!(
+            browser_available(&config),
+            discover_chromium_browser_if_present().is_some()
+        );
     }
 }
